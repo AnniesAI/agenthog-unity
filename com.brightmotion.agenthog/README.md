@@ -5,6 +5,9 @@ events, and identity** — posted straight to your [AgentHog](https://github.com
 project over the standard ingest contract. Pure C#, zero dependencies, no native plugins,
 IL2CPP-safe.
 
+Cross-platform integration docs (web, React Native, Unity, event naming, troubleshooting):
+**[hog.brightmotion.io/docs/integrate](https://hog.brightmotion.io/docs/integrate)**.
+
 - **Unity**: 2021.3 LTS or newer (developed against Unity 6 LTS)
 - **Platforms**: iOS and Android are the primary targets; standalone and the editor work
   out of the box. WebGL is expected to work but is not yet a tested target.
