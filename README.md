@@ -9,7 +9,7 @@
 - **[`ExampleGame/`](ExampleGame/)** — a tiny three-scene game (menu → tap-the-target →
   results) exercising the whole SDK surface. Open it in Unity 6, press Play. It ships with
   a blank AgentHog config (SDK inert); to send real events, create
-  `Assets/Resources/AgentHogSettings.local.asset` (gitignored) with your host + project key.
+  `Assets/Resources/AgentHogSettingsLocal.asset` (gitignored) with your host + project key.
 
 ## Install (in your game)
 

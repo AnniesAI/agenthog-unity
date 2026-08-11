@@ -38,11 +38,62 @@ namespace Brightmotion.AgentHog.Unity
         {
             get
             {
-                // IANA on iOS/Android/macOS (Mono/IL2CPP), Windows id on Windows — sent as-is
-                try { return TimeZoneInfo.Local.Id; }
+                // IANA on iOS/Android/macOS/Linux (Mono/IL2CPP); Windows returns display ids
+                // like "Central Standard Time" — map the common ones, else send as-is
+                try
+                {
+                    string id = TimeZoneInfo.Local.Id;
+                    if (id.IndexOf('/') >= 0) return id; // already IANA
+                    return WindowsToIana.TryGetValue(id, out string iana) ? iana : id;
+                }
                 catch (Exception) { return ""; }
             }
         }
+
+        // Compact Windows→IANA table for the zones that dominate game traffic; the long tail
+        // passes through raw (harmless: tz is a display/reporting column, not a key).
+        static readonly Dictionary<string, string> WindowsToIana = new Dictionary<string, string>
+        {
+            { "Eastern Standard Time", "America/New_York" },
+            { "Central Standard Time", "America/Chicago" },
+            { "Mountain Standard Time", "America/Denver" },
+            { "US Mountain Standard Time", "America/Phoenix" },
+            { "Pacific Standard Time", "America/Los_Angeles" },
+            { "Alaskan Standard Time", "America/Anchorage" },
+            { "Hawaiian Standard Time", "Pacific/Honolulu" },
+            { "Atlantic Standard Time", "America/Halifax" },
+            { "SA Pacific Standard Time", "America/Bogota" },
+            { "Argentina Standard Time", "America/Argentina/Buenos_Aires" },
+            { "E. South America Standard Time", "America/Sao_Paulo" },
+            { "Central America Standard Time", "America/Guatemala" },
+            { "Central Standard Time (Mexico)", "America/Mexico_City" },
+            { "GMT Standard Time", "Europe/London" },
+            { "W. Europe Standard Time", "Europe/Berlin" },
+            { "Romance Standard Time", "Europe/Paris" },
+            { "Central Europe Standard Time", "Europe/Budapest" },
+            { "Central European Standard Time", "Europe/Warsaw" },
+            { "E. Europe Standard Time", "Europe/Chisinau" },
+            { "FLE Standard Time", "Europe/Kiev" },
+            { "GTB Standard Time", "Europe/Bucharest" },
+            { "Russian Standard Time", "Europe/Moscow" },
+            { "Turkey Standard Time", "Europe/Istanbul" },
+            { "Israel Standard Time", "Asia/Jerusalem" },
+            { "Arabian Standard Time", "Asia/Dubai" },
+            { "India Standard Time", "Asia/Kolkata" },
+            { "SE Asia Standard Time", "Asia/Bangkok" },
+            { "China Standard Time", "Asia/Shanghai" },
+            { "Singapore Standard Time", "Asia/Singapore" },
+            { "Tokyo Standard Time", "Asia/Tokyo" },
+            { "Korea Standard Time", "Asia/Seoul" },
+            { "AUS Eastern Standard Time", "Australia/Sydney" },
+            { "AUS Central Standard Time", "Australia/Darwin" },
+            { "W. Australia Standard Time", "Australia/Perth" },
+            { "New Zealand Standard Time", "Pacific/Auckland" },
+            { "South Africa Standard Time", "Africa/Johannesburg" },
+            { "Egypt Standard Time", "Africa/Cairo" },
+            { "W. Central Africa Standard Time", "Africa/Lagos" },
+            { "UTC", "Etc/UTC" },
+        };
 
         public string Language => LanguageTag(Application.systemLanguage);
 

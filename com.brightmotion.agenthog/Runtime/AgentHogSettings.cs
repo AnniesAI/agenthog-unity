@@ -5,8 +5,9 @@ namespace Brightmotion.AgentHog
     /// <summary>
     /// Inspector-first configuration: create via Assets → Create → AgentHog → Settings, save it
     /// as Resources/AgentHogSettings, and the SDK initializes itself on startup — no code.
-    /// A Resources/AgentHogSettings.local asset (conventionally gitignored) overrides the
+    /// A Resources/AgentHogSettingsLocal asset (conventionally gitignored) overrides the
     /// committed one, so public repos can ship a blank config while devs keep real keys locally.
+    /// (Deliberately no interior dot in the name — Resources paths with dots resolve unreliably.)
     /// Calling AgentHog.Init yourself always wins: auto-init skips when already initialized.
     /// </summary>
     [CreateAssetMenu(fileName = "AgentHogSettings", menuName = "AgentHog/Settings")]
@@ -54,7 +55,7 @@ namespace Brightmotion.AgentHog
         static void AutoInit()
         {
             if (AgentHog.Enabled) return; // code-first Init already ran
-            var settings = Resources.Load<AgentHogSettings>("AgentHogSettings.local")
+            var settings = Resources.Load<AgentHogSettings>("AgentHogSettingsLocal")
                            ?? Resources.Load<AgentHogSettings>("AgentHogSettings");
             if (settings == null) return; // no asset → the game initializes in code (or not at all)
             AgentHog.Init(settings.ToConfig());

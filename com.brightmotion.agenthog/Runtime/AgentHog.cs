@@ -110,9 +110,9 @@ namespace Brightmotion.AgentHog
         public static void SetLandingParams(Dictionary<string, string> extras)
             => Run(() => client.SetLandingParams(extras));
 
-        /// <summary>Force-send the queue now (fire-and-forget).</summary>
+        /// <summary>Force-send the queue now (fire-and-forget; bypasses retry backoff).</summary>
         public static void Flush()
-            => Run(() => client.Flush());
+            => Run(() => client.Flush(force: true));
 
         /// <summary>Sign-out: new anonymous id + new session. The device becomes a new person.</summary>
         public static void Reset()

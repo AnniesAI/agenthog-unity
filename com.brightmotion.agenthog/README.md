@@ -24,7 +24,7 @@ Pin a tag. `#main` floats; game builds shouldn't.
 **Option A — settings asset (no code).** Create *Assets → Create → AgentHog → Settings*,
 save it as `Assets/Resources/AgentHogSettings.asset`, fill in `host` + `projectKey`. The SDK
 initializes itself on startup. Committing a blank asset and keeping your real key in an
-uncommitted `Assets/Resources/AgentHogSettings.local.asset` (which takes precedence) keeps
+uncommitted `Assets/Resources/AgentHogSettingsLocal.asset` (which takes precedence) keeps
 keys out of public repos.
 
 **Option B — code.**

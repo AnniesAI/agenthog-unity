@@ -32,6 +32,12 @@ namespace Brightmotion.AgentHog.Core
     /// Pure-C# core: identity, sessions, queue, batch building, retry/backoff, carry-over.
     /// Single-threaded by contract (Unity main thread); the facade marshals cross-thread calls.
     /// Wire shapes follow agent-hog CONTRACTS.md §"Wire format" byte-for-byte.
+    ///
+    /// Outbound design: live state (queue/identify/context) is PACKAGED — serialized into an
+    /// immutable payload string under the ids it belongs to, appended to a persisted outbox —
+    /// before anything is sent. Session rotation, Reset(), the hard cap, and crashes therefore
+    /// can never corrupt or re-attribute a batch that is (or was) in flight: the payload
+    /// already carries its own ids and survives on disk until a 2xx/4xx settles it.
     /// </summary>
     internal sealed class Client
     {
@@ -39,10 +45,13 @@ namespace Brightmotion.AgentHog.Core
         const string KeySessionId = "agh_sid";
         const string KeyActivity = "agh_sts";
         const string KeySessionStart = "agh_sstart"; // SDK-internal, not part of the web key set
-        const string KeyQueue = "agh_queue";
+        const string KeyQueue = "agh_queue";         // live (unpackaged) state snapshot
+        const string KeyOutbox = "agh_outbox";       // packaged-but-unsettled payloads, FIFO
         const int HardQueueCap = 500;                // server per-batch max
+        const int OutboxCap = 20;                    // packaged batches kept for retry, drop-oldest
         const long BackoffStartMs = 2_000;
         const long BackoffCapMs = 60_000;
+        const long SendTimeoutMs = 90_000;           // watchdog: a lost transport callback must not wedge us
 
         readonly CoreConfig cfg;
         readonly IKeyValueStore store;
@@ -65,7 +74,7 @@ namespace Brightmotion.AgentHog.Core
         readonly List<KeyValuePair<string, string>> landingExtras = new List<KeyValuePair<string, string>>();
 
         readonly List<Event> queue = new List<Event>();
-        readonly Queue<string> deferredBatches = new Queue<string>(); // pre-serialized old-session/carry-over payloads
+        readonly List<string> outbox = new List<string>(); // head = oldest packaged payload
         Dictionary<string, object> pendingIdentify;        // { email?, traits? }
 
         // behavior — cumulative per session, sent on every flush
@@ -74,6 +83,8 @@ namespace Brightmotion.AgentHog.Core
         long? firstInteractionMs;
 
         bool inFlight;
+        int sendToken;                                     // stale-callback guard (watchdog re-sends)
+        long inFlightStartedMs;
         bool flushRequested;
         long backoffMs;
         long retryAtMs;
@@ -103,6 +114,12 @@ namespace Brightmotion.AgentHog.Core
                 store.Set(KeyAnonId, anonId);
             }
 
+            // packaged payloads from a previous run ship first, under the ids frozen inside them
+            if (Json.Parse(store.Get(KeyOutbox)) is List<object> stored)
+                foreach (var item in stored)
+                    if (item is string payload)
+                        outbox.Add(payload);
+
             var snapshot = Json.Parse(store.Get(KeyQueue)) as Dictionary<string, object>;
 
             string storedSid = store.Get(KeySessionId);
@@ -121,12 +138,12 @@ namespace Brightmotion.AgentHog.Core
             else
             {
                 StartNewSession(now);
-                // a leftover queue from a dead session ships as-is under its ORIGINAL ids —
-                // ingest upserts the session row and the sweep re-finalizes, so late is safe
+                // a leftover live queue from a dead session becomes a packaged batch under its
+                // ORIGINAL ids — ingest upserts the session row and the sweep re-finalizes
                 if (snapshot != null && SnapshotHasPayload(snapshot))
                 {
                     var payload = BuildBatchFromSnapshot(snapshot);
-                    if (payload != null) deferredBatches.Enqueue(payload);
+                    if (payload != null) AppendToOutbox(payload);
                 }
                 store.Delete(KeyQueue);
             }
@@ -147,8 +164,13 @@ namespace Brightmotion.AgentHog.Core
         public void Screen(string path, string title)
         {
             long now = clock.NowMs;
+            string before = sessionId;
             EnsureSessionFresh(now);
-            EmitLeaveIfOnScreen(now);
+            // after an idle-gap rotation the old screen's stint ended with the OLD session;
+            // an idle-inflated leave in the new session would be wrong (mirrors OnResume) —
+            // and the navigation target, not the idled-on screen, is the new session's entry
+            if (sessionId == before) EmitLeaveIfOnScreen(now);
+            else firstPath = null;
             currentPath = NormalizePath(path);
             if (firstPath == null) firstPath = currentPath;
             screenEnteredMs = now;
@@ -175,6 +197,7 @@ namespace Brightmotion.AgentHog.Core
         public void Tag(string name, object value)
         {
             if (string.IsNullOrEmpty(name)) return;
+            if (value == null) value = true; // tag("beta_user") == trait true, parity with web/RN
             if (pendingIdentify == null) pendingIdentify = new Dictionary<string, object>();
             if (!(pendingIdentify.TryGetValue("traits", out var t) && t is Dictionary<string, object> traits))
             {
@@ -182,8 +205,7 @@ namespace Brightmotion.AgentHog.Core
                 pendingIdentify["traits"] = traits;
             }
             traits[name] = value;
-            Enqueue("custom", "tag: " + name,
-                value == null ? null : new Dictionary<string, object> { { "value", value } });
+            Enqueue("custom", "tag: " + name, new Dictionary<string, object> { { "value", value } });
         }
 
         public void Register(Dictionary<string, object> props)
@@ -236,54 +258,58 @@ namespace Brightmotion.AgentHog.Core
 
         public void Reset()
         {
-            Flush();
+            // package the old identity's tail FIRST — its payload freezes the old ids, so
+            // nothing of the previous person can ever ship under the new anonId
+            PackageLiveState();
             anonId = newId();
             store.Set(KeyAnonId, anonId);
             StartNewSession(clock.NowMs);
-            store.Delete(KeyQueue);
+            PersistQueue();
+            Flush();
             log("reset: new anonId " + anonId);
         }
 
-        public void Flush()
+        /// <summary>force=true bypasses the backoff window (manual flush, backgrounding).</summary>
+        public void Flush(bool force = false)
         {
             long now = clock.NowMs;
             if (inFlight) { flushRequested = true; return; }
-            if (now < retryAtMs) return;
+            if (!force && now < retryAtMs) return;
 
-            string payload;
-            int sentEvents = 0;
-            bool sentContext = false, sentIdentify = false, isDeferred;
+            if (outbox.Count == 0 && !PackageLiveState()) return;
 
-            if (deferredBatches.Count > 0)
-            {
-                payload = deferredBatches.Peek();
-                isDeferred = true;
-            }
-            else
-            {
-                if (queue.Count == 0 && pendingIdentify == null) return;
-                sentEvents = queue.Count;
-                sentContext = contextPending;
-                sentIdentify = pendingIdentify != null;
-                payload = BuildLiveBatch();
-                isDeferred = false;
-            }
-
+            string payload = outbox[0];
+            int token = ++sendToken;
             inFlight = true;
+            inFlightStartedMs = now;
             lastFlushAttemptMs = now;
-            log("send " + (isDeferred ? "(carry-over) " : "") + payload.Length + "B");
-            transport.Send(ingestUrl, payload, cfg.UserAgent, (status, code) =>
-                OnSendComplete(status, code, isDeferred, sentEvents, sentContext, sentIdentify));
+            log("send " + payload.Length + "B (outbox depth " + outbox.Count + ")");
+            transport.Send(ingestUrl, payload, cfg.UserAgent,
+                (status, code) => OnSendComplete(status, code, token));
         }
 
-        /// <summary>Frame/interval driver: interval flush + backoff retries. Cheap; call often.</summary>
+        /// <summary>Frame/interval driver: interval flush, backoff retries, send watchdog.</summary>
         public void Tick()
         {
             long now = clock.NowMs;
-            if (inFlight || now < retryAtMs) return;
-            bool havePayload = deferredBatches.Count > 0 || queue.Count > 0 || pendingIdentify != null;
+            if (inFlight)
+            {
+                if (now - inFlightStartedMs > SendTimeoutMs)
+                {
+                    // transport callback lost (host destroyed mid-coroutine, etc.) — recover;
+                    // the payload is still at the outbox head, a stale late callback is
+                    // rejected by the token check
+                    log("send watchdog fired after " + SendTimeoutMs + "ms — recovering");
+                    inFlight = false;
+                    backoffMs = backoffMs == 0 ? BackoffStartMs : backoffMs;
+                    retryAtMs = now + backoffMs;
+                }
+                return;
+            }
+            if (now < retryAtMs) return;
+            bool havePayload = outbox.Count > 0 || queue.Count > 0 || pendingIdentify != null;
             if (!havePayload) return;
-            if (deferredBatches.Count > 0 || queue.Count >= cfg.MaxQueue ||
+            if (outbox.Count > 0 || queue.Count >= cfg.MaxQueue ||
                 now - lastFlushAttemptMs >= cfg.FlushIntervalMs)
                 Flush();
         }
@@ -291,12 +317,11 @@ namespace Brightmotion.AgentHog.Core
         public void OnPause()
         {
             long now = clock.NowMs;
-            if (currentPath != null)
-            {
-                Enqueue("leave", "leave: " + currentPath, LeaveProps(now));
-                screenEnteredMs = 0; // stint closed; Resume reopens it
-            }
-            Flush();
+            string before = sessionId;
+            EnsureSessionFresh(now); // a foreground idle gap rotates here, old tail packaged
+            if (sessionId == before) EmitLeaveIfOnScreen(now);
+            screenEnteredMs = 0; // stint closed (idempotent: quit-after-pause emits no 2nd leave)
+            Flush(force: true);  // last chance before suspension — backoff must not block it
             PersistQueue();
             store.Save();
         }
@@ -351,7 +376,7 @@ namespace Brightmotion.AgentHog.Core
             queue.Add(new Event { Ts = now, Type = type, Name = name, Path = currentPath ?? "/", Props = merged });
             if (queue.Count > HardQueueCap)
             {
-                queue.RemoveAt(0); // drop-oldest
+                queue.RemoveAt(0); // drop-oldest; only ever unsent events — in-flight ones live in the outbox
                 log("queue cap hit, dropped oldest event");
             }
             Touch(now);
@@ -375,14 +400,35 @@ namespace Brightmotion.AgentHog.Core
         void EnsureSessionFresh(long now)
         {
             if (lastActivityMs > 0 && now - lastActivityMs <= cfg.IdleMs) return;
-            if (sessionId != null && (queue.Count > 0 || pendingIdentify != null))
-            {
-                // the old session's tail ships under the old ids
-                deferredBatches.Enqueue(BuildLiveBatch());
-                queue.Clear();
-                pendingIdentify = null;
-            }
+            PackageLiveState(); // the old session's tail freezes under the old ids
             StartNewSession(now);
+        }
+
+        /// <summary>
+        /// Serialize the live queue/identify/context into an immutable payload appended to the
+        /// persisted outbox, and clear the live state. Returns false when there was nothing
+        /// batchable (context alone never ships without events, matching web).
+        /// </summary>
+        bool PackageLiveState()
+        {
+            if (queue.Count == 0 && pendingIdentify == null) return false;
+            AppendToOutbox(BuildLiveBatch());
+            queue.Clear();
+            pendingIdentify = null;
+            if (contextPending) contextPending = false; // context rides inside the payload now
+            PersistQueue();
+            return true;
+        }
+
+        void AppendToOutbox(string payload)
+        {
+            outbox.Add(payload);
+            if (outbox.Count > OutboxCap)
+            {
+                outbox.RemoveAt(0); // pathological offline runs: cap disk, keep newest
+                log("outbox cap hit, dropped oldest batch");
+            }
+            PersistOutbox();
         }
 
         void StartNewSession(long now)
@@ -407,41 +453,26 @@ namespace Brightmotion.AgentHog.Core
             store.Set(KeyActivity, now.ToString(CultureInfo.InvariantCulture));
         }
 
-        void OnSendComplete(TransportStatus status, int code, bool wasDeferred,
-                            int sentEvents, bool sentContext, bool sentIdentify)
+        void OnSendComplete(TransportStatus status, int code, int token)
         {
+            if (token != sendToken || !inFlight)
+            {
+                log("stale transport callback ignored (token " + token + ")");
+                return;
+            }
             inFlight = false;
             switch (status)
             {
                 case TransportStatus.Success:
                     backoffMs = 0;
                     retryAtMs = 0;
-                    if (wasDeferred)
-                    {
-                        deferredBatches.Dequeue();
-                    }
-                    else
-                    {
-                        queue.RemoveRange(0, Math.Min(sentEvents, queue.Count));
-                        if (sentContext) contextPending = false;
-                        if (sentIdentify) pendingIdentify = null;
-                        PersistQueue();
-                    }
+                    if (outbox.Count > 0) outbox.RemoveAt(0);
+                    PersistOutbox();
                     break;
                 case TransportStatus.PermanentError:
                     log("ingest rejected (" + code + "), dropping batch");
-                    if (wasDeferred)
-                    {
-                        deferredBatches.Dequeue();
-                    }
-                    else
-                    {
-                        queue.RemoveRange(0, Math.Min(sentEvents, queue.Count));
-                        if (sentIdentify) pendingIdentify = null;
-                        // contextPending stays: if a later batch succeeds, the session still
-                        // needs its context
-                        PersistQueue();
-                    }
+                    if (outbox.Count > 0) outbox.RemoveAt(0);
+                    PersistOutbox();
                     break;
                 case TransportStatus.RetryableError:
                     backoffMs = backoffMs == 0 ? BackoffStartMs : Math.Min(backoffMs * 2, BackoffCapMs);
@@ -449,16 +480,9 @@ namespace Brightmotion.AgentHog.Core
                     log("send failed (" + code + "), retry in " + backoffMs + "ms");
                     break;
             }
-            if (status != TransportStatus.RetryableError &&
-                (flushRequested || deferredBatches.Count > 0 || queue.Count >= cfg.MaxQueue))
-            {
-                flushRequested = false;
-                Flush();
-            }
-            else
-            {
-                flushRequested = false;
-            }
+            bool more = flushRequested || outbox.Count > 0 || queue.Count >= cfg.MaxQueue;
+            flushRequested = false;
+            if (status != TransportStatus.RetryableError && more) Flush();
         }
 
         // ---- batch building ----
@@ -539,7 +563,7 @@ namespace Brightmotion.AgentHog.Core
             return sb.ToString();
         }
 
-        // ---- carry-over persistence ----
+        // ---- persistence ----
 
         void PersistQueue()
         {
@@ -565,6 +589,12 @@ namespace Brightmotion.AgentHog.Core
             foreach (var e in queue) events.Add(EventToObj(e));
             root.Add("events", events);
             store.Set(KeyQueue, Json.Serialize(root));
+        }
+
+        void PersistOutbox()
+        {
+            if (outbox.Count == 0) store.Delete(KeyOutbox);
+            else store.Set(KeyOutbox, Json.Serialize(outbox));
         }
 
         JsonObj ExtrasToObj()

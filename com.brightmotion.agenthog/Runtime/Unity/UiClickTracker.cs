@@ -134,7 +134,10 @@ namespace Brightmotion.AgentHog.Unity
             if (interactive == null) return; // non-interactive UI (decor) — kills tap noise
 
             string text = FindLabelText(interactive);
-            string label = !string.IsNullOrEmpty(text) ? text : interactive.name;
+            // GameObject-name fallback goes through the same collapse/50-char rule as text —
+            // the dashboard groups on these names
+            string label = !string.IsNullOrEmpty(text) ? text : Collapse(interactive.name);
+            if (label.Length == 0) label = "unnamed";
             client.EmitClick(label, BuildSelector(interactive, kind), text);
         }
 

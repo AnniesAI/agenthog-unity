@@ -10,8 +10,8 @@ ExampleGame/*.csproj
 ExampleGame/*.sln
 
 # Local (uncommitted) AgentHog settings carrying the real dev host/key
-ExampleGame/Assets/Resources/AgentHogSettings.local.asset
-ExampleGame/Assets/Resources/AgentHogSettings.local.asset.meta
+ExampleGame/Assets/Resources/AgentHogSettingsLocal.asset
+ExampleGame/Assets/Resources/AgentHogSettingsLocal.asset.meta
 
 # OS / editor noise
 .DS_Store
