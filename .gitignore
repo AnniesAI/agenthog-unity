@@ -1,0 +1,21 @@
+# Unity project transients (ExampleGame)
+ExampleGame/[Ll]ibrary/
+ExampleGame/[Tt]emp/
+ExampleGame/[Oo]bj/
+ExampleGame/[Bb]uild*/
+ExampleGame/[Ll]ogs/
+ExampleGame/[Uu]serSettings/
+ExampleGame/Packages/packages-lock.json
+ExampleGame/*.csproj
+ExampleGame/*.sln
+
+# Local (uncommitted) AgentHog settings carrying the real dev host/key
+ExampleGame/Assets/Resources/AgentHogSettings.local.asset
+ExampleGame/Assets/Resources/AgentHogSettings.local.asset.meta
+
+# OS / editor noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+out/

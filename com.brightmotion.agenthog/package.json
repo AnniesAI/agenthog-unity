@@ -1,0 +1,17 @@
+{
+  "name": "com.brightmotion.agenthog",
+  "version": "0.1.0",
+  "displayName": "AgentHog Analytics",
+  "description": "AgentHog analytics for Unity games: sessions, scene views, uGUI click autocapture, custom events, and identity over the AgentHog ingest contract. Pure C#, zero dependencies, no native plugins.",
+  "unity": "2021.3",
+  "license": "MIT",
+  "keywords": [
+    "analytics",
+    "agenthog",
+    "telemetry"
+  ],
+  "author": {
+    "name": "Brightmotion"
+  },
+  "documentationUrl": "https://github.com/AnniesAI/agenthog-unity"
+}
