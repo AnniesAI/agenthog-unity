@@ -17,7 +17,7 @@ namespace Brightmotion.AgentHog
     /// </summary>
     public static class AgentHog
     {
-        public const string SdkVersion = "0.1.0";
+        public const string SdkVersion = "0.2.0";
 
         static Client client;
         static AgentHogRunner runner;
@@ -66,6 +66,8 @@ namespace Brightmotion.AgentHog
                 MaxQueue = Mathf.Max(1, config.MaxQueue),
                 FlushIntervalMs = (long)(Mathf.Max(1f, config.FlushIntervalSeconds) * 1000f),
                 IdleMs = Mathf.Max(1, config.IdleMinutes) * 60_000L,
+                InstallReferrerProvider = config.InstallReferrer,
+                InstallReferrerTimeoutMs = (long)(Mathf.Max(0f, config.InstallReferrerTimeoutSeconds) * 1000f),
                 DebugLog = config.Debug,
             };
             Action<string> log = config.Debug ? (Action<string>)(m => Debug.Log("[AgentHog] " + m)) : (_ => { });
@@ -74,6 +76,7 @@ namespace Brightmotion.AgentHog
             client = new Client(core, store, new SystemClock(), new WebRequestTransport(runner),
                                 new UnityContextProvider(appName, appVersion), null, log);
             runner.Bind(client, config);
+            client.BeginInstallReferrerRead();
 
             if (config.Debug)
                 Debug.Log("[AgentHog] initialized: " + core.Host + " anon=" + client.AnonId + " session=" + client.SessionId);
@@ -109,6 +112,19 @@ namespace Brightmotion.AgentHog
         /// </summary>
         public static void SetLandingParams(Dictionary<string, string> extras)
             => Run(() => client.SetLandingParams(extras));
+
+        /// <summary>
+        /// Register a callback for the server-computed install attribution result. Fires once
+        /// per callback, on the main thread: immediately when the result is already known
+        /// (replayed from cache on later launches), else as soon as the install batch's
+        /// response arrives. Never fires when there is no attribution (iOS, organic installs
+        /// with no referrer read).
+        /// </summary>
+        public static void OnAttribution(Action<InstallAttribution> callback)
+            => Run(() => client.OnAttribution(callback));
+
+        /// <summary>The cached install attribution result, or null while unknown.</summary>
+        public static InstallAttribution GetAttribution() => client?.Attribution;
 
         /// <summary>Force-send the queue now (fire-and-forget; bypasses retry backoff).</summary>
         public static void Flush()

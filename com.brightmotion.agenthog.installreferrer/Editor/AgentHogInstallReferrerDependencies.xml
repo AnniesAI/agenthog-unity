@@ -1,0 +1,8 @@
+<!-- External Dependency Manager for Unity (EDM4U) manifest. Projects using EDM4U resolve
+     the Play installreferrer client automatically; without EDM4U, add the implementation
+     line to mainTemplate.gradle by hand (see the package README). -->
+<dependencies>
+  <androidPackages>
+    <androidPackage spec="com.android.installreferrer:installreferrer:2.2"/>
+  </androidPackages>
+</dependencies>

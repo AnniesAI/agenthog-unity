@@ -30,6 +30,18 @@ namespace Brightmotion.AgentHog
         /// <summary>Session idle timeout. MUST mirror the server's SESSION_IDLE_MINUTES. Default 30.</summary>
         public int IdleMinutes = 30;
 
+        /// <summary>
+        /// Resolves the raw install referrer for automatic install attribution (Android:
+        /// Play Install Referrer). Set by the optional com.brightmotion.agenthog.installreferrer
+        /// package, or wire your own <see cref="InstallReferrerProvider"/>. Read once per
+        /// install, ahead of the first flush; null leaves attribution off (0.1.0 behavior).
+        /// </summary>
+        public InstallReferrerProvider InstallReferrer;
+
+        /// <summary>How long the install session's first flush waits for the referrer read.
+        /// The read is local IPC and resolves in milliseconds; this is a safety valve. Default 1.5s.</summary>
+        public float InstallReferrerTimeoutSeconds = 1.5f;
+
         /// <summary>Emit "pageview: /scene-name" automatically on scene loads. Default true.</summary>
         public bool AutoTrackScenes = true;
 

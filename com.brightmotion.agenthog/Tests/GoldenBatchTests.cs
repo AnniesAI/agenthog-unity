@@ -33,10 +33,23 @@ namespace Brightmotion.AgentHog.Tests
             Assert.AreEqual(expected, json, "wire format drifted from the golden fixture");
         }
 
+        // A Meta-style referrer: plaintext UTMs plus the encrypted utm_content envelope,
+        // which must ship raw in context.install but stay off the landingUrl.
+        static readonly string GoldenReferrer =
+            "utm_source=apps.facebook.com&utm_medium=cpc&utm_campaign=fb4a&utm_content=" +
+            Uri.EscapeDataString("{\"app\":1,\"t\":2,\"source\":{\"data\":\"" + new string('a', 160) + "\",\"nonce\":\"0123456789ab\"}}");
+
         internal static string BuildDeterministicBatch()
         {
             var rig = new Rig();
+            rig.Config.InstallReferrerProvider = callback => callback(new InstallReferrerResult
+            {
+                Referrer = GoldenReferrer,
+                ClickTs = 1_759_998_000,
+                InstallBeginTs = 1_759_999_000,
+            });
             var client = rig.NewClient();
+            client.BeginInstallReferrerRead();
             client.Screen("/main-menu", "Main Menu");
             rig.Clock.Advance(1500);
             client.RecordInteraction();
