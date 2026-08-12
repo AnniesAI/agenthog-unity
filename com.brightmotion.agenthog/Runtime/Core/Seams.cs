@@ -30,11 +30,12 @@ namespace Brightmotion.AgentHog.Core
 
     /// <summary>
     /// Async single-request transport (UnityWebRequest coroutine in production). The callback
-    /// must be invoked on the same thread the client runs on (Unity main thread).
+    /// must be invoked on the same thread the client runs on (Unity main thread). `body` is
+    /// the response text on success (the ingest answer to an install batch), else null.
     /// </summary>
     internal interface ITransport
     {
-        void Send(string url, string json, string userAgent, Action<TransportStatus, int> callback);
+        void Send(string url, string json, string userAgent, Action<TransportStatus, int, string> callback);
     }
 
     /// <summary>Device/environment facts the Unity layer supplies for session context.</summary>

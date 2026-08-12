@@ -5,8 +5,12 @@ integration docs: [hog.brightmotion.io/docs/integrate](https://hog.brightmotion.
 
 - **[`com.brightmotion.agenthog/`](com.brightmotion.agenthog/)** — the UPM package games
   install. Sessions, automatic scene pageviews, uGUI click autocapture, per-screen time,
-  custom events, identity, offline carry-over. Pure C#, zero dependencies, no native code.
+  custom events, identity, install attribution, offline carry-over. Pure C#, zero
+  dependencies, no native code.
   **Start with its [README](com.brightmotion.agenthog/README.md).**
+- **[`com.brightmotion.agenthog.installreferrer/`](com.brightmotion.agenthog.installreferrer/)**
+  — optional Android companion that reads the Play Install Referrer for automatic install
+  attribution; it alone carries the Gradle dependency, keeping the core native-free.
 - **[`ExampleGame/`](ExampleGame/)** — a tiny three-scene game (menu → tap-the-target →
   results) exercising the whole SDK surface. Open it in Unity 6, press Play. It ships with
   a blank AgentHog config (SDK inert); to send real events, create
@@ -15,7 +19,7 @@ integration docs: [hog.brightmotion.io/docs/integrate](https://hog.brightmotion.
 ## Install (in your game)
 
 ```json
-"com.brightmotion.agenthog": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog#v0.1.0"
+"com.brightmotion.agenthog": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog#v0.2.0"
 ```
 
 ## Development

@@ -22,6 +22,13 @@ namespace Brightmotion.AgentHog.Tests
         public static Dictionary<string, object> Context(this SentBatch batch)
             => batch.Parsed.TryGetValue("context", out var c) ? c as Dictionary<string, object> : null;
 
+        public static Dictionary<string, object> Install(this SentBatch batch)
+        {
+            var context = batch.Context();
+            return context != null && context.TryGetValue("install", out var i)
+                ? i as Dictionary<string, object> : null;
+        }
+
         public static Dictionary<string, object> Behavior(this SentBatch batch)
             => batch.Parsed.TryGetValue("behavior", out var b) ? b as Dictionary<string, object> : null;
 

@@ -14,9 +14,14 @@ namespace Brightmotion.AgentHog.Tests
     internal sealed class FakeStore : IKeyValueStore
     {
         public readonly Dictionary<string, string> Data = new Dictionary<string, string>();
+        public readonly HashSet<string> GetThrowsFor = new HashSet<string>();
         public int SaveCount;
 
-        public string Get(string key) => Data.TryGetValue(key, out var v) ? v : null;
+        public string Get(string key)
+        {
+            if (GetThrowsFor.Contains(key)) throw new InvalidOperationException("io error: " + key);
+            return Data.TryGetValue(key, out var v) ? v : null;
+        }
         public void Set(string key, string value) => Data[key] = value;
         public void Delete(string key) => Data.Remove(key);
         public void Save() => SaveCount++;
@@ -33,31 +38,37 @@ namespace Brightmotion.AgentHog.Tests
     internal sealed class FakeTransport : ITransport
     {
         public readonly List<SentBatch> Sent = new List<SentBatch>();
-        public readonly List<Action<TransportStatus, int>> Pending = new List<Action<TransportStatus, int>>();
+        public readonly List<Action<TransportStatus, int, string>> Pending =
+            new List<Action<TransportStatus, int, string>>();
 
         /// <summary>When true (default), sends complete synchronously with NextStatus.</summary>
         public bool AutoComplete = true;
         public TransportStatus NextStatus = TransportStatus.Success;
         public int NextCode = 204;
+        public string NextBody;
+        /// <summary>Per-batch responder; overrides Next* when set.</summary>
+        public Func<SentBatch, (TransportStatus status, int code, string body)> Respond;
 
-        public void Send(string url, string json, string userAgent, Action<TransportStatus, int> callback)
+        public void Send(string url, string json, string userAgent, Action<TransportStatus, int, string> callback)
         {
-            Sent.Add(new SentBatch
+            var batch = new SentBatch
             {
                 Url = url,
                 Json = json,
                 UserAgent = userAgent,
                 Parsed = Json_Parse(json),
-            });
-            if (AutoComplete) callback(NextStatus, NextCode);
+            };
+            Sent.Add(batch);
+            var (status, code, body) = Respond != null ? Respond(batch) : (NextStatus, NextCode, NextBody);
+            if (AutoComplete) callback(status, code, body);
             else Pending.Add(callback);
         }
 
-        public void CompleteOldest(TransportStatus status, int code)
+        public void CompleteOldest(TransportStatus status, int code, string body = null)
         {
             var cb = Pending[0];
             Pending.RemoveAt(0);
-            cb(status, code);
+            cb(status, code, body);
         }
 
         static Dictionary<string, object> Json_Parse(string json)
