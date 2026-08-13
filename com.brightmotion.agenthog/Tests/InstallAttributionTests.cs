@@ -585,6 +585,189 @@ namespace Brightmotion.AgentHog.Tests
             Assert.IsNull(rig.Transport.Sent[0].Install());
         }
 
+        // ---- review-fix regressions ----
+
+        [Test]
+        public void CrashBeforeFirstFlushShipsInstallUnderTheOriginalSession()
+        {
+            var rig = new Rig();
+            rig.Config.InstallReferrerProvider = Resolving("utm_source=web&utm_campaign=summer", 111, 222);
+            var c1 = rig.NewClient();
+            c1.BeginInstallReferrerRead();
+            string installSession = c1.SessionId;
+            c1.Capture("app_first_open", null);
+            // killed before any flush
+
+            rig.Clock.Advance(45 * Minute);
+            int calls = 0;
+            rig.Config.InstallReferrerProvider = callback => calls++;
+            var c2 = rig.NewClient();
+            c2.BeginInstallReferrerRead();
+            Assert.AreEqual(0, calls, "the snapshot batch is the pending attempt — no re-read");
+            c2.Flush();
+
+            var batch = rig.Transport.Sent[0];
+            Assert.AreEqual(installSession, batch.SessionId(), "attribution belongs to the install session");
+            Assert.AreEqual("utm_source=web&utm_campaign=summer", batch.Install()["referrer"]);
+            Assert.AreEqual(111L, batch.Install()["clickTs"]);
+            StringAssert.Contains("utm_source=web", (string)batch.Context()["landingUrl"]);
+            Assert.AreEqual("1", rig.Store.Data["agh_ref"], "carried delivery confirms the read");
+        }
+
+        [Test]
+        public void CrashBeforeFirstFlushWithinIdleResumesTheInstall()
+        {
+            var rig = new Rig();
+            rig.Config.InstallReferrerProvider = Resolving("utm_source=web");
+            var c1 = rig.NewClient();
+            c1.BeginInstallReferrerRead();
+            string session = c1.SessionId;
+            c1.Capture("x", null);
+
+            rig.Clock.Advance(2 * Minute);
+            int calls = 0;
+            rig.Config.InstallReferrerProvider = callback => calls++;
+            var c2 = rig.NewClient();
+            c2.BeginInstallReferrerRead();
+            Assert.AreEqual(0, calls, "the adopted snapshot already holds the referrer");
+            c2.Flush();
+
+            var batch = rig.Transport.Sent[0];
+            Assert.AreEqual(session, batch.SessionId());
+            Assert.AreEqual("utm_source=web", batch.Install()["referrer"]);
+            StringAssert.Contains("utm_source=web", (string)batch.Context()["landingUrl"]);
+        }
+
+        [Test]
+        public void DeliveredInstallIsNotResentWhenRegisterReopensContext()
+        {
+            var rig = new Rig();
+            rig.Config.InstallReferrerProvider = Resolving("utm_source=web");
+            var client = rig.NewClient();
+            client.BeginInstallReferrerRead();
+            client.Capture("x", null);
+            client.Flush();
+            Assert.NotNull(rig.Transport.Sent[0].Install());
+
+            client.Register(new Dictionary<string, object> { { "v", 1 } });
+            client.Capture("y", null);
+            client.Flush();
+            var resent = rig.Transport.Sent[1];
+            Assert.NotNull(resent.Context());
+            Assert.IsNull(resent.Install(), "a delivered install must not be submitted again");
+            StringAssert.Contains("utm_source=web", (string)resent.Context()["landingUrl"],
+                "the referrer UTMs keep shaping the landing URL");
+        }
+
+        [Test]
+        public void LateReadAfterRotationIsDiscarded()
+        {
+            var rig = new Rig();
+            Action<InstallReferrerResult> resolve = null;
+            rig.Config.InstallReferrerProvider = callback => resolve = callback;
+            rig.Config.InstallReferrerTimeoutMs = 5;
+            var client = rig.NewClient();
+            client.BeginInstallReferrerRead();
+            client.Capture("x", null);
+            rig.Clock.Advance(6);
+            client.Flush(); // valve blew; install session's context shipped without install
+
+            rig.Clock.Advance(31 * Minute);
+            client.Capture("y", null); // rotates — fresh window, but NOT the install session
+            resolve(new InstallReferrerResult { Referrer = "utm_source=web" });
+            client.Flush();
+
+            var rotated = rig.Transport.Sent[rig.Transport.Sent.Count - 1];
+            Assert.NotNull(rotated.Context());
+            Assert.IsNull(rotated.Install(), "a late read must never stamp a later session");
+            Assert.IsFalse(rig.Store.Data.ContainsKey("agh_ref"), "retries next launch instead");
+        }
+
+        [Test]
+        public void OutboxCapNeverDropsTheInFlightHead()
+        {
+            var rig = new Rig();
+            rig.Transport.AutoComplete = false;
+            var client = rig.NewClient();
+            client.Capture("head", null);
+            client.Flush(); // "head" is the in-flight outbox head
+
+            for (int i = 0; i < 25; i++)
+            {
+                rig.Clock.Advance(31 * Minute);
+                client.Capture("evt" + i, null); // each rotation packages the previous tail
+            }
+
+            rig.Transport.AutoComplete = true;
+            rig.Transport.CompleteOldest(TransportStatus.Success, 204); // must settle "head" itself
+            client.Flush();
+
+            int headSends = 0;
+            foreach (var batch in rig.Transport.Sent)
+                foreach (string name in batch.EventNames())
+                    if (name == "head") headSends++;
+            Assert.AreEqual(1, headSends, "the in-flight head must neither drop nor re-send");
+        }
+
+        [Test]
+        public void PauseDuringTheGateHoldsAndDeliversNextLaunch()
+        {
+            var rig = new Rig();
+            rig.Config.InstallReferrerProvider = callback => { /* hung read */ };
+            var c1 = rig.NewClient();
+            c1.BeginInstallReferrerRead();
+            c1.Capture("x", null);
+            c1.OnPause();
+            rig.Transport.AssertNoBatchSent(0,
+                "deliberate: packaging now would freeze the context referrer-less");
+
+            rig.Clock.Advance(2 * Minute);
+            rig.Config.InstallReferrerProvider = Resolving("utm_source=web");
+            var c2 = rig.NewClient();
+            c2.BeginInstallReferrerRead();
+            c2.Flush();
+            Assert.AreEqual("utm_source=web", rig.Transport.Sent[0].Install()["referrer"],
+                "the held batch delivers complete on the next launch");
+        }
+
+        [Test]
+        public void ThrowingStoreOnDeliveryDoesNotResendTheBatch()
+        {
+            var rig = new Rig();
+            rig.Store.SetThrowsFor.Add("agh_ref");
+            rig.Store.SetThrowsFor.Add("agh_attr");
+            rig.Config.InstallReferrerProvider = Resolving("utm_source=web");
+            rig.Transport.Respond = InstallResponder(ResolvedBody);
+            var client = rig.NewClient();
+            client.BeginInstallReferrerRead();
+            client.Capture("x", null);
+            client.Flush();
+            Assert.AreEqual(1, rig.Transport.Sent.Count);
+
+            client.Capture("y", null);
+            client.Flush();
+            CollectionAssert.AreEqual(new List<string> { "y" },
+                rig.Transport.Sent[1].EventNames(),
+                "a failed flag/cache write must not resurrect the settled batch");
+        }
+
+        [Test]
+        public void UnresolvableAttributionReleasesCallbacks()
+        {
+            var rig = new Rig();
+            Action<InstallReferrerResult> resolve = null;
+            rig.Config.InstallReferrerProvider = callback => resolve = callback;
+            var client = rig.NewClient();
+            client.BeginInstallReferrerRead();
+            client.OnAttribution(a => { });
+            Assert.AreEqual(1, client.AttributionCallbackCount, "read pending — a result may come");
+
+            resolve(null); // permanent no-referrer
+            Assert.AreEqual(0, client.AttributionCallbackCount, "no result can ever arrive");
+            client.OnAttribution(a => { });
+            Assert.AreEqual(0, client.AttributionCallbackCount, "late registrations are not pinned");
+        }
+
         [Test]
         public void RequeryNeverTouchesTheDoneFlagOn4xx()
         {

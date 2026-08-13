@@ -36,6 +36,11 @@ package bundles no `.aar` of its own). One of:
 
 ## Use
 
+Installing the package **is** the integration: it registers itself as the SDK's default
+install-referrer provider at load, so both the code-first `AgentHog.Init(config)` path and
+the no-code `Resources/AgentHogSettings` asset path pick it up automatically. To be
+explicit (or to override a different default), wire it yourself:
+
 ```csharp
 using Brightmotion.AgentHog;
 using Brightmotion.AgentHog.InstallReferrer;
@@ -45,14 +50,14 @@ var config = new AgentHogConfig
     Host = "https://your-agenthog-host.example",
     ProjectKey = "ah_xxxxxxxx",
 };
-PlayInstallReferrer.Attach(config);   // before Init
+PlayInstallReferrer.Attach(config);   // optional — installing the package already does this
 AgentHog.Init(config);
 
 AgentHog.OnAttribution(a =>           // optional: the server-computed result, cached forever
-    Debug.Log($"install source: {a.Source}"));
+    Debug.Log($"install source: {a.Source}"));   // safe to call before Init, too
 ```
 
-That's all. On the install session's first launch the SDK reads the referrer once (holding
+On the install session's first launch the SDK reads the referrer once (holding
 the first batch for at most 1.5 s — the read is local IPC and typically resolves in
 milliseconds), sends the raw string to your AgentHog server for classification/decryption,
 and feeds any plaintext `utm_*` params into the session's landing URL. Editor, iOS, and
