@@ -2,8 +2,8 @@
   "dependencies": {
     "com.brightmotion.agenthog": "file:../../com.brightmotion.agenthog",
     "com.brightmotion.agenthog.installreferrer": "file:../../com.brightmotion.agenthog.installreferrer",
-    "com.unity.test-framework": "1.4.5",
-    "com.unity.ugui": "2.0.0",
+    "com.unity.test-framework": "1.7.0",
+    "com.unity.ugui": "2.5.0",
     "com.unity.modules.androidjni": "1.0.0",
     "com.unity.modules.audio": "1.0.0",
     "com.unity.modules.imgui": "1.0.0",
