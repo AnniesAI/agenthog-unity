@@ -154,6 +154,9 @@ namespace Brightmotion.AgentHog.InstallReferrer
                     try { client.Call("endConnection"); } catch (Exception) { }
                     client.Dispose();
                 }
+                if (result == null && permanent)
+                    Debug.Log("[AgentHog] install referrer: none (response " + responseCode
+                              + ") — sideload or no Play record");
                 if (result != null || permanent)
                     Deliver(pending, result);
             }
