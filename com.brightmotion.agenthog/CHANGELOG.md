@@ -17,7 +17,14 @@ Automatic install attribution (Android).
   re-asks on later launches until it resolves.
 - New optional companion package `com.brightmotion.agenthog.installreferrer` carries the
   Play installreferrer Gradle dependency and the JNI reader; the core package keeps zero
-  native dependencies.
+  native dependencies. Installing it is the whole integration: it registers itself as
+  `AgentHog.DefaultInstallReferrer` at load, covering the no-code settings-asset flow too.
+- Attribution is strictly install-session-scoped: a crash before the first flush carries
+  the read referrer with the persisted snapshot (delivered later under the install
+  session's original ids), and a read resolving after the session rotated is discarded
+  rather than stamped onto a later session.
+- `OnAttribution` is safe before `Init` (early registrations queue), and callbacks are
+  released as soon as no result can ever arrive (iOS/editor, organic installs).
 - Transport callbacks now surface the response body (any 2xx is success, as before).
 
 ## [0.1.0] — 2026-08-11

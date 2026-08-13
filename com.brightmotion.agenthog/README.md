@@ -103,13 +103,13 @@ package and the SDK attributes installs automatically — including Meta (Facebo
 app-install campaigns:
 
 ```csharp
-var config = new AgentHogConfig { Host = "…", ProjectKey = "…" };
-PlayInstallReferrer.Attach(config);   // from the companion package, before Init
-AgentHog.Init(config);
-
-AgentHog.OnAttribution(a =>           // fires once; replayed from cache on later launches
-    Debug.Log($"{a.Source}: {string.Join(",", a.Utm.Keys)}"));
+AgentHog.OnAttribution(a =>           // fires once; replayed from cache on later launches;
+    Debug.Log($"{a.Source}: {string.Join(",", a.Utm.Keys)}"));  // safe before Init
 ```
+
+Installing the companion package is the whole integration — it registers itself as the
+default provider at load, for both code-first `Init` and the no-code settings-asset flow
+(`PlayInstallReferrer.Attach(config)` exists for explicit wiring).
 
 How it works:
 

@@ -15,7 +15,19 @@ namespace Brightmotion.AgentHog.InstallReferrer
     /// </summary>
     public static class PlayInstallReferrer
     {
-        /// <summary>Register this reader on the config. Call before <see cref="AgentHog.Init"/>;
+        // Installing the package is the whole integration: registering the default provider
+        // at load makes attribution work for the settings-asset flow too, which never touches
+        // an AgentHogConfig. SubsystemRegistration runs before any scene Awake and before the
+        // core's AfterSceneLoad auto-init.
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void RegisterDefault()
+        {
+            if (AgentHog.DefaultInstallReferrer == null)
+                AgentHog.DefaultInstallReferrer = Read;
+        }
+
+        /// <summary>Register this reader on the config explicitly. Optional — installing the
+        /// package already registers it as <see cref="AgentHog.DefaultInstallReferrer"/>;
         /// a provider the game already set is left in place.</summary>
         public static void Attach(AgentHogConfig config)
         {
@@ -41,13 +53,25 @@ namespace Brightmotion.AgentHog.InstallReferrer
 #if UNITY_ANDROID && !UNITY_EDITOR
         static void ReadAndroid(Action<InstallReferrerResult> callback)
         {
+            AndroidJavaClass clientClass;
+            try
+            {
+                clientClass = new AndroidJavaClass("com.android.installreferrer.api.InstallReferrerClient");
+            }
+            catch (Exception e)
+            {
+                // the Gradle dependency isn't in this build: nothing will ever resolve here —
+                // a permanent answer
+                Debug.LogWarning("[AgentHog] installreferrer library missing: " + e.Message);
+                callback(null);
+                return;
+            }
             AndroidJavaObject client = null;
             try
             {
                 using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
                 using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
                 using (var context = activity.Call<AndroidJavaObject>("getApplicationContext"))
-                using (var clientClass = new AndroidJavaClass("com.android.installreferrer.api.InstallReferrerClient"))
                 using (var builder = clientClass.CallStatic<AndroidJavaObject>("newBuilder", context))
                 {
                     client = builder.Call<AndroidJavaObject>("build");
@@ -57,11 +81,15 @@ namespace Brightmotion.AgentHog.InstallReferrer
             }
             catch (Exception e)
             {
-                // installreferrer classes missing (Gradle dependency not resolved): nothing
-                // will ever resolve in this build — a permanent answer
-                Debug.LogWarning("[AgentHog] install referrer unavailable: " + e.Message);
+                // activity not up yet, binder refusals (SecurityException, DeadObjectException):
+                // transient — no callback, so the SDK's valve releases the flush and the read
+                // retries next launch instead of stamping "no referrer" forever
+                Debug.LogWarning("[AgentHog] install referrer read failed (will retry next launch): " + e.Message);
                 if (client != null) client.Dispose();
-                callback(null);
+            }
+            finally
+            {
+                clientClass.Dispose();
             }
         }
 

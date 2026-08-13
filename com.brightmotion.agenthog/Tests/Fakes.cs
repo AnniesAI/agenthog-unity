@@ -15,6 +15,7 @@ namespace Brightmotion.AgentHog.Tests
     {
         public readonly Dictionary<string, string> Data = new Dictionary<string, string>();
         public readonly HashSet<string> GetThrowsFor = new HashSet<string>();
+        public readonly HashSet<string> SetThrowsFor = new HashSet<string>();
         public int SaveCount;
 
         public string Get(string key)
@@ -22,7 +23,12 @@ namespace Brightmotion.AgentHog.Tests
             if (GetThrowsFor.Contains(key)) throw new InvalidOperationException("io error: " + key);
             return Data.TryGetValue(key, out var v) ? v : null;
         }
-        public void Set(string key, string value) => Data[key] = value;
+
+        public void Set(string key, string value)
+        {
+            if (SetThrowsFor.Contains(key)) throw new InvalidOperationException("io error: " + key);
+            Data[key] = value;
+        }
         public void Delete(string key) => Data.Remove(key);
         public void Save() => SaveCount++;
     }
