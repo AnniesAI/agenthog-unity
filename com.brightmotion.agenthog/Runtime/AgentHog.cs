@@ -17,7 +17,7 @@ namespace Brightmotion.AgentHog
     /// </summary>
     public static class AgentHog
     {
-        public const string SdkVersion = "0.1.0";
+        public const string SdkVersion = "0.2.0";
 
         static Client client;
         static AgentHogRunner runner;
@@ -109,6 +109,43 @@ namespace Brightmotion.AgentHog
         /// </summary>
         public static void SetLandingParams(Dictionary<string, string> extras)
             => Run(() => client.SetLandingParams(extras));
+
+        /// <summary>
+        /// Assigned variant for a feature flag (deterministic per player — agent-hog
+        /// CONTRACTS.md bucketing), or null when your code default applies: SDK disabled,
+        /// ruleset not loaded yet (see <see cref="FlagsReady"/>), unknown/killed flag, or the
+        /// player is outside the traffic allocation. The first read per flag per session
+        /// records exposure automatically. Main thread only — worker-thread calls return null.
+        /// </summary>
+        public static string Flag(string key)
+        {
+            if (client == null || Thread.CurrentThread.ManagedThreadId != mainThreadId) return null;
+            return client.Flag(key);
+        }
+
+        /// <summary>Boolean-flag sugar: true iff <see cref="Flag"/> resolves to "on".</summary>
+        public static bool FlagOn(string key) => Flag(key) == "on";
+
+        /// <summary>
+        /// Runs the callback once the flag ruleset is available (cached from the last launch,
+        /// or fetched) — or once the fetch failed, so gate your first read on it instead of
+        /// polling. Fires immediately when the SDK is disabled: code defaults apply.
+        /// </summary>
+        public static void FlagsReady(Action callback)
+        {
+            if (callback == null) return;
+            if (client == null)
+            {
+                callback();
+                return;
+            }
+            Run(() => client.FlagsReady(callback));
+        }
+
+        /// <summary>Dev/test override, persisted across launches (null clears). Overrides win
+        /// even before the ruleset loads and never emit exposure data.</summary>
+        public static void OverrideFlag(string key, string variant)
+            => Run(() => client.OverrideFlag(key, variant));
 
         /// <summary>Force-send the queue now (fire-and-forget; bypasses retry backoff).</summary>
         public static void Flush()

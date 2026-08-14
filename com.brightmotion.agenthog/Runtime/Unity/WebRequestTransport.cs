@@ -14,18 +14,18 @@ namespace Brightmotion.AgentHog.Unity
 
         public WebRequestTransport(MonoBehaviour host) => this.host = host;
 
-        public void Send(string url, string json, string userAgent, Action<TransportStatus, int> callback)
+        public void Send(string url, string json, string userAgent, Action<TransportStatus, int, string> callback)
         {
             if (host == null || !host.isActiveAndEnabled)
             {
                 // teardown mid-send: report retryable so the batch survives via carry-over
-                callback(TransportStatus.RetryableError, 0);
+                callback(TransportStatus.RetryableError, 0, null);
                 return;
             }
             host.StartCoroutine(SendRoutine(url, json, userAgent, callback));
         }
 
-        static IEnumerator SendRoutine(string url, string json, string userAgent, Action<TransportStatus, int> callback)
+        static IEnumerator SendRoutine(string url, string json, string userAgent, Action<TransportStatus, int, string> callback)
         {
             var req = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST)
             {
@@ -57,8 +57,36 @@ namespace Brightmotion.AgentHog.Unity
                     status = TransportStatus.RetryableError;
                     break;
             }
+            // flag-ruleset revision rides every ingest response (agent-hog CONTRACTS.md);
+            // read it before Dispose or the header is gone
+            string flagsRev = status == TransportStatus.Success ? req.GetResponseHeader("x-agh-flags-rev") : null;
             req.Dispose();
-            callback(status, code);
+            callback(status, code, flagsRev);
+        }
+
+        public void Fetch(string url, string userAgent, Action<int, string> callback)
+        {
+            if (host == null || !host.isActiveAndEnabled)
+            {
+                callback(0, null);
+                return;
+            }
+            host.StartCoroutine(FetchRoutine(url, userAgent, callback));
+        }
+
+        static IEnumerator FetchRoutine(string url, string userAgent, Action<int, string> callback)
+        {
+            var req = UnityWebRequest.Get(url);
+            req.timeout = 30;
+#if !UNITY_WEBGL || UNITY_EDITOR
+            // WebGL: a bare GET needs no custom headers and stays preflight-free
+            req.SetRequestHeader("User-Agent", userAgent);
+#endif
+            yield return req.SendWebRequest();
+            int code = (int)req.responseCode;
+            string body = req.result == UnityWebRequest.Result.Success ? req.downloadHandler.text : null;
+            req.Dispose();
+            callback(body != null ? code : (code > 0 ? code : 0), body);
         }
     }
 }

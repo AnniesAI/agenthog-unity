@@ -76,6 +76,28 @@ AgentHog.AnonId; AgentHog.SessionId; AgentHog.Enabled;
 All calls are safe from any thread (cross-thread calls are marshalled to the main thread)
 and safe before `Init` (no-ops).
 
+### Feature flags & A/B tests
+
+Create a flag from the AgentHog CLI (`ah flags create difficulty_curve --variants control:50,b:50`),
+then read it — the SDK assigns the variant deterministically per player (same player, same
+variant, across sessions and offline) and records exposure automatically, so
+`ah funnel purchase --by flag:difficulty_curve` splits every metric by variant with no extra code:
+
+```csharp
+AgentHog.FlagsReady(() => {                    // gate the first read on the ruleset (cached after launch 1)
+    string v = AgentHog.Flag("difficulty_curve");   // "control" | "b" | null
+    ApplyDifficulty(v == "b" ? Curve.Gentle : Curve.Classic);  // null → your code default
+});
+AgentHog.FlagOn("new_shop_ui");                // boolean flags → true/false
+AgentHog.OverrideFlag("difficulty_curve", "b"); // QA: persisted, never pollutes experiment data (null clears)
+```
+
+`Flag()` returns `null` whenever the answer isn't known (SDK disabled, ruleset not loaded,
+flag killed, player outside the rollout percentage) — **the fallback always lives in your
+code**, which is what makes the CLI's kill switch safe. `Flag()` is main-thread-only and
+returns `null` from worker threads. Full loop (experiments, results, rollout, retirement):
+https://hog.brightmotion.io/docs/experiments
+
 ### Config reference
 
 | Field | Default | Notes |
