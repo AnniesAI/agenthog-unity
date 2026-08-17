@@ -17,7 +17,7 @@ Cross-platform integration docs (web, React Native, Unity, event naming, trouble
 Add to `Packages/manifest.json` (or Package Manager → *Add package from git URL*):
 
 ```json
-"com.brightmotion.agenthog": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog#v0.1.0"
+"com.brightmotion.agenthog": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog#v0.3.0"
 ```
 
 Pin a tag. `#main` floats; game builds shouldn't.
@@ -67,7 +67,9 @@ AgentHog.Screen("/settings/audio");            // manual screens for in-scene UI
 AgentHog.Identify(traits: new() { ["user_id"] = playerId });  // stitch identity (no email needed)
 AgentHog.Tag("ab_test", "variant_b");          // set one trait + emit "tag: ab_test"
 AgentHog.Register(new() { ["build_channel"] = "beta" });      // merged into every event
-AgentHog.SetLandingParams(new() { ["utm_source"] = "playstore" }); // install attribution — call before first flush
+AgentHog.SetLandingParams(new() { ["utm_source"] = "playstore" }); // manual attribution params — call before first flush
+AgentHog.OnAttribution(a => { /* a.Source, a.Utm, a.Meta */ });    // install attribution result (see below)
+AgentHog.GetAttribution();                     // cached result, or null while unknown
 AgentHog.Flush();                              // force-send now
 AgentHog.Reset();                              // sign-out: device becomes a new anonymous person
 AgentHog.AnonId; AgentHog.SessionId; AgentHog.Enabled;
@@ -109,9 +111,51 @@ https://hog.brightmotion.io/docs/experiments
 | `FlushIntervalSeconds` | `10` | foreground send cadence |
 | `MaxQueue` | `20` | queue length that forces a send (hard cap 500) |
 | `IdleMinutes` | `30` | session idle timeout — must match the server |
+| `InstallReferrer` | `null` | install-referrer provider — set by the optional installreferrer package |
+| `InstallReferrerTimeoutSeconds` | `1.5` | how long the first flush waits for the referrer read |
 | `AutoTrackScenes` | `true` | scene loads → pageviews |
 | `AutoCaptureUiClicks` | `true` | uGUI tap autocapture |
 | `Debug` | `false` | log sends/drops via `Debug.Log` |
+
+## Install attribution (Android)
+
+Add the optional
+[`com.brightmotion.agenthog.installreferrer`](../com.brightmotion.agenthog.installreferrer)
+package and the SDK attributes installs automatically — including Meta (Facebook/Instagram)
+app-install campaigns:
+
+```csharp
+AgentHog.OnAttribution(a =>           // fires once; replayed from cache on later launches;
+    Debug.Log($"{a.Source}: {string.Join(",", a.Utm.Keys)}"));  // safe before Init
+```
+
+Installing the companion package is the whole integration — it registers itself as the
+default provider at load, for both code-first `Init` and the no-code settings-asset flow
+(`PlayInstallReferrer.Attach(config)` exists for explicit wiring).
+
+How it works:
+
+- On the install session's first launch the SDK reads the **Play Install Referrer** once
+  (holding the first batch for at most `InstallReferrerTimeoutSeconds` — the read is local
+  IPC and typically resolves in milliseconds) and ships the raw string as
+  `context.install` in that batch.
+- The **server** classifies it (`meta_referrer` / `play_referrer` / `organic` / `none`),
+  decrypts Meta's encrypted envelope with the key configured in your AgentHog project
+  settings, fills the session's `utm_*` columns, and answers with the attribution result.
+- Plaintext referrer `utm_*` params also join the session's landing URL automatically, below
+  explicit `SetLandingParams` keys and deep-link params in precedence. Meta's encrypted
+  `utm_content` blob never appears there.
+- The result is cached on the device and exposed through `AgentHog.OnAttribution(cb)`
+  (fires once per callback, immediately when already known, on the main thread) and
+  `AgentHog.GetAttribution()`. It survives `Reset()` — it belongs to the install, not the
+  person. If the decryption key wasn't configured yet, a `Pending` result re-asks on later
+  launches until it resolves; the server backfills the session either way.
+- The read happens once per install; delivery is confirmed end-to-end, so a failed or
+  offline first launch retries on the next one. iOS, editor, and standalone have no
+  referrer — nothing is sent and callbacks never fire.
+
+No companion package (or your own `AgentHogConfig.InstallReferrer` provider) → attribution
+stays off entirely, and `SetLandingParams` remains the manual hook.
 
 ## Event naming (the AgentHog contract)
 
@@ -124,6 +168,9 @@ data in props.
 
 - Identity is a **random UUID** stored in `PlayerPrefs`. No IDFA/GAID, no device
   fingerprinting → no App Tracking Transparency prompt is required for this SDK.
+- Install attribution rides the Play Install Referrer only — it needs **no device
+  identifiers** (no GAID, no ATT), and the Meta decryption key lives server-side; it never
+  touches the SDK or your game binary.
 - Click autocapture records UI label text (button captions), never user input.
 - `Reset()` severs the device from the previous identity on sign-out.
 - Requests carry a `<YourGame>/<version> AgentHogUnity/<sdk> (<platform> <os>)` user agent.

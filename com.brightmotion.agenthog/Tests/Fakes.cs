@@ -14,10 +14,21 @@ namespace Brightmotion.AgentHog.Tests
     internal sealed class FakeStore : IKeyValueStore
     {
         public readonly Dictionary<string, string> Data = new Dictionary<string, string>();
+        public readonly HashSet<string> GetThrowsFor = new HashSet<string>();
+        public readonly HashSet<string> SetThrowsFor = new HashSet<string>();
         public int SaveCount;
 
-        public string Get(string key) => Data.TryGetValue(key, out var v) ? v : null;
-        public void Set(string key, string value) => Data[key] = value;
+        public string Get(string key)
+        {
+            if (GetThrowsFor.Contains(key)) throw new InvalidOperationException("io error: " + key);
+            return Data.TryGetValue(key, out var v) ? v : null;
+        }
+
+        public void Set(string key, string value)
+        {
+            if (SetThrowsFor.Contains(key)) throw new InvalidOperationException("io error: " + key);
+            Data[key] = value;
+        }
         public void Delete(string key) => Data.Remove(key);
         public void Save() => SaveCount++;
     }
@@ -33,14 +44,18 @@ namespace Brightmotion.AgentHog.Tests
     internal sealed class FakeTransport : ITransport
     {
         public readonly List<SentBatch> Sent = new List<SentBatch>();
-        public readonly List<Action<TransportStatus, int, string>> Pending = new List<Action<TransportStatus, int, string>>();
+        public readonly List<Action<TransportStatus, int, string, string>> Pending =
+            new List<Action<TransportStatus, int, string, string>>();
 
         /// <summary>When true (default), sends complete synchronously with NextStatus.</summary>
         public bool AutoComplete = true;
         public TransportStatus NextStatus = TransportStatus.Success;
         public int NextCode = 204;
+        public string NextBody;
         /// <summary>x-agh-flags-rev echoed on successful sends (null = header absent).</summary>
         public string NextFlagsRev;
+        /// <summary>Per-batch responder; overrides Next* when set.</summary>
+        public Func<SentBatch, (TransportStatus status, int code, string body)> Respond;
 
         // ---- /sdk/flags fetches ----
         public readonly List<string> FetchUrls = new List<string>();
@@ -49,24 +64,26 @@ namespace Brightmotion.AgentHog.Tests
         public int FlagsCode = 200;
         public string FlagsBody; // null + AutoCompleteFetch = fetch fails
 
-        public void Send(string url, string json, string userAgent, Action<TransportStatus, int, string> callback)
+        public void Send(string url, string json, string userAgent, Action<TransportStatus, int, string, string> callback)
         {
-            Sent.Add(new SentBatch
+            var batch = new SentBatch
             {
                 Url = url,
                 Json = json,
                 UserAgent = userAgent,
                 Parsed = Json_Parse(json),
-            });
-            if (AutoComplete) callback(NextStatus, NextCode, NextFlagsRev);
+            };
+            Sent.Add(batch);
+            var (status, code, body) = Respond != null ? Respond(batch) : (NextStatus, NextCode, NextBody);
+            if (AutoComplete) callback(status, code, body, NextFlagsRev);
             else Pending.Add(callback);
         }
 
-        public void CompleteOldest(TransportStatus status, int code, string flagsRev = null)
+        public void CompleteOldest(TransportStatus status, int code, string body = null, string flagsRev = null)
         {
             var cb = Pending[0];
             Pending.RemoveAt(0);
-            cb(status, code, flagsRev);
+            cb(status, code, body, flagsRev);
         }
 
         public void Fetch(string url, string userAgent, Action<int, string> callback)

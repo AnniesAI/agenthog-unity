@@ -14,18 +14,18 @@ namespace Brightmotion.AgentHog.Unity
 
         public WebRequestTransport(MonoBehaviour host) => this.host = host;
 
-        public void Send(string url, string json, string userAgent, Action<TransportStatus, int, string> callback)
+        public void Send(string url, string json, string userAgent, Action<TransportStatus, int, string, string> callback)
         {
             if (host == null || !host.isActiveAndEnabled)
             {
                 // teardown mid-send: report retryable so the batch survives via carry-over
-                callback(TransportStatus.RetryableError, 0, null);
+                callback(TransportStatus.RetryableError, 0, null, null);
                 return;
             }
             host.StartCoroutine(SendRoutine(url, json, userAgent, callback));
         }
 
-        static IEnumerator SendRoutine(string url, string json, string userAgent, Action<TransportStatus, int, string> callback)
+        static IEnumerator SendRoutine(string url, string json, string userAgent, Action<TransportStatus, int, string, string> callback)
         {
             var req = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST)
             {
@@ -45,10 +45,12 @@ namespace Brightmotion.AgentHog.Unity
 
             int code = (int)req.responseCode;
             TransportStatus status;
+            string body = null;
             switch (req.result)
             {
-                case UnityWebRequest.Result.Success:
+                case UnityWebRequest.Result.Success: // any 2xx — 204, or 200 + attribution body
                     status = TransportStatus.Success;
+                    body = req.downloadHandler.text;
                     break;
                 case UnityWebRequest.Result.ProtocolError:
                     status = code >= 500 ? TransportStatus.RetryableError : TransportStatus.PermanentError;
@@ -61,7 +63,7 @@ namespace Brightmotion.AgentHog.Unity
             // read it before Dispose or the header is gone
             string flagsRev = status == TransportStatus.Success ? req.GetResponseHeader("x-agh-flags-rev") : null;
             req.Dispose();
-            callback(status, code, flagsRev);
+            callback(status, code, body, flagsRev);
         }
 
         public void Fetch(string url, string userAgent, Action<int, string> callback)

@@ -34,9 +34,11 @@ namespace Brightmotion.AgentHog.Core
     /// </summary>
     internal interface ITransport
     {
-        /// <summary>POST an ingest batch. flagsRev = the response's x-agh-flags-rev header
-        /// (the flag-ruleset revision every ingest response carries), null when absent.</summary>
-        void Send(string url, string json, string userAgent, Action<TransportStatus, int, string> callback);
+        /// <summary>POST an ingest batch. `body` is the response text on success (the ingest
+        /// answer to an install batch), else null. flagsRev = the response's x-agh-flags-rev
+        /// header (the flag-ruleset revision every ingest response carries), null when
+        /// absent.</summary>
+        void Send(string url, string json, string userAgent, Action<TransportStatus, int, string, string> callback);
 
         /// <summary>GET a small JSON resource (the /sdk/flags ruleset). Callback gets the HTTP
         /// status (0 on network error) and the response body (null when unavailable).</summary>

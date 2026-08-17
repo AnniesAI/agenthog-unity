@@ -23,7 +23,17 @@ namespace Brightmotion.AgentHog
         static AgentHogRunner runner;
         static int mainThreadId;
         static readonly ConcurrentQueue<Action> crossThreadCalls = new ConcurrentQueue<Action>();
+        static readonly List<Action<InstallAttribution>> preInitAttributionCallbacks =
+            new List<Action<InstallAttribution>>();
         static bool warnedUninitialized;
+
+        /// <summary>
+        /// Fallback install-referrer provider used when <see cref="AgentHogConfig.InstallReferrer"/>
+        /// is unset. The installreferrer companion package registers itself here at load, which
+        /// is what makes attribution work with the no-code settings-asset flow. An explicit
+        /// config provider always wins.
+        /// </summary>
+        public static InstallReferrerProvider DefaultInstallReferrer;
 
         /// <summary>True when Init succeeded with a usable, enabled config.</summary>
         public static bool Enabled => client != null;
@@ -66,6 +76,8 @@ namespace Brightmotion.AgentHog
                 MaxQueue = Mathf.Max(1, config.MaxQueue),
                 FlushIntervalMs = (long)(Mathf.Max(1f, config.FlushIntervalSeconds) * 1000f),
                 IdleMs = Mathf.Max(1, config.IdleMinutes) * 60_000L,
+                InstallReferrerProvider = config.InstallReferrer ?? DefaultInstallReferrer,
+                InstallReferrerTimeoutMs = (long)(Mathf.Max(0f, config.InstallReferrerTimeoutSeconds) * 1000f),
                 DebugLog = config.Debug,
             };
             Action<string> log = config.Debug ? (Action<string>)(m => Debug.Log("[AgentHog] " + m)) : (_ => { });
@@ -74,6 +86,19 @@ namespace Brightmotion.AgentHog
             client = new Client(core, store, new SystemClock(), new WebRequestTransport(runner),
                                 new UnityContextProvider(appName, appVersion), null, log);
             runner.Bind(client, config);
+            client.BeginInstallReferrerRead();
+            List<Action<InstallAttribution>> earlyCallbacks = null;
+            lock (preInitAttributionCallbacks)
+            {
+                if (preInitAttributionCallbacks.Count > 0)
+                {
+                    earlyCallbacks = new List<Action<InstallAttribution>>(preInitAttributionCallbacks);
+                    preInitAttributionCallbacks.Clear();
+                }
+            }
+            if (earlyCallbacks != null)
+                foreach (var callback in earlyCallbacks)
+                    client.OnAttribution(callback);
 
             if (config.Debug)
                 Debug.Log("[AgentHog] initialized: " + core.Host + " anon=" + client.AnonId + " session=" + client.SessionId);
@@ -147,6 +172,31 @@ namespace Brightmotion.AgentHog
         public static void OverrideFlag(string key, string variant)
             => Run(() => client.OverrideFlag(key, variant));
 
+        /// <summary>
+        /// Register a callback for the server-computed install attribution result. Fires once
+        /// per callback, on the main thread: immediately when the result is already known
+        /// (replayed from cache on later launches), else as soon as the install batch's
+        /// response arrives. Never fires when there is no attribution (iOS, organic installs
+        /// with no referrer read). Safe before Init — early registrations are queued and
+        /// handed to the client when it initializes.
+        /// </summary>
+        public static void OnAttribution(Action<InstallAttribution> callback)
+        {
+            if (callback == null) return;
+            lock (preInitAttributionCallbacks)
+            {
+                if (client == null)
+                {
+                    preInitAttributionCallbacks.Add(callback);
+                    return;
+                }
+            }
+            Run(() => client.OnAttribution(callback));
+        }
+
+        /// <summary>The cached install attribution result, or null while unknown.</summary>
+        public static InstallAttribution GetAttribution() => client?.Attribution;
+
         /// <summary>Force-send the queue now (fire-and-forget; bypasses retry backoff).</summary>
         public static void Flush()
             => Run(() => client.Flush(force: true));
@@ -199,6 +249,7 @@ namespace Brightmotion.AgentHog
             runner = null;
             client = null;
             warnedUninitialized = false;
+            lock (preInitAttributionCallbacks) preInitAttributionCallbacks.Clear();
         }
     }
 }

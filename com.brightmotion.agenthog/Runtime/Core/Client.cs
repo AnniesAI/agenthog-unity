@@ -16,6 +16,8 @@ namespace Brightmotion.AgentHog.Core
         public int MaxQueue = 20;
         public long FlushIntervalMs = 10_000;
         public long IdleMs = 30 * 60_000;
+        public InstallReferrerProvider InstallReferrerProvider;
+        public long InstallReferrerTimeoutMs = 1_500;
         public bool DebugLog;
     }
 
@@ -50,6 +52,8 @@ namespace Brightmotion.AgentHog.Core
         const string KeyFlags = "agh_flags";         // cached flag ruleset json (same key set as web/RN)
         const string KeyExposed = "agh_exp";         // $exposure dedupe: { sid, keys } — one per flag per session
         const string KeyOverrides = "agh_flag_ovr";  // dev/test overrides: { flagKey: variant }
+        const string KeyReferrerDone = "agh_ref";    // install-referrer delivered ('1') — once per install
+        const string KeyAttribution = "agh_attr";    // cached attribution result (json wrapper)
         const int HardQueueCap = 500;                // server per-batch max
         const int OutboxCap = 20;                    // packaged batches kept for retry, drop-oldest
         const long BackoffStartMs = 2_000;
@@ -80,6 +84,19 @@ namespace Brightmotion.AgentHog.Core
         readonly List<string> outbox = new List<string>(); // head = oldest packaged payload
         Dictionary<string, object> pendingIdentify;        // { email?, traits? }
 
+        // install attribution — context.install rides the install session's first context send
+        string installReferrer;                            // raw referrer for context.install
+        long? installClickTs;
+        long? installBeginTs;
+        bool installRequery;                               // cached-pending re-ask; stamps nothing
+        List<KeyValuePair<string, string>> installUtms = new List<KeyValuePair<string, string>>();
+        bool installReadPending;                           // provider invoked, callback outstanding
+        long installGateUntilMs;                           // first flush holds until then (safety valve)
+        bool installWindowClosed;                          // session context frozen — late reads retry next launch
+        string installReadSessionId;                       // the read belongs to THIS session only
+        InstallAttribution attribution;                    // last known result (cached or fresh)
+        readonly List<Action<InstallAttribution>> attributionCallbacks = new List<Action<InstallAttribution>>();
+
         // behavior — cumulative per session, sent on every flush
         bool mouseMoved;
         bool anyScroll;
@@ -108,6 +125,8 @@ namespace Brightmotion.AgentHog.Core
         public string AnonId => anonId;
         public string SessionId => sessionId;
         public string CurrentPath => currentPath;
+        public InstallAttribution Attribution => attribution;
+        internal int AttributionCallbackCount => attributionCallbacks.Count;
 
         public Client(CoreConfig cfg, IKeyValueStore store, IClock clock, ITransport transport,
                       IContextProvider ctx, Func<string> newId = null, Action<string> log = null)
@@ -184,6 +203,8 @@ namespace Brightmotion.AgentHog.Core
             // current device facts always win over anything adopted from disk
             foreach (var kv in ctx.AutoRegistered)
                 registered[kv.Key] = kv.Value;
+
+            LoadAttributionCache();
         }
 
         // ---- public surface (mirrors the RN client one-for-one) ----
@@ -439,7 +460,13 @@ namespace Brightmotion.AgentHog.Core
             if (inFlight) { flushRequested = true; return; }
             if (!force && now < retryAtMs) return;
 
-            if (outbox.Count == 0 && !PackageLiveState()) return;
+            // hold the install session's first packaging until the referrer read resolves or
+            // the valve blows — already-packaged payloads (carry-over) are free to ship.
+            // Deliberately holds even for force (OnPause): packaging now would freeze the
+            // context referrer-less and unbackfillable; a kill during the gate delivers the
+            // full install batch from the snapshot on the next launch instead
+            bool gateHolds = installReadPending && now < installGateUntilMs;
+            if (outbox.Count == 0 && (gateHolds || !PackageLiveState())) return;
 
             string payload = outbox[0];
             int token = ++sendToken;
@@ -448,7 +475,7 @@ namespace Brightmotion.AgentHog.Core
             lastFlushAttemptMs = now;
             log("send " + payload.Length + "B (outbox depth " + outbox.Count + ")");
             transport.Send(ingestUrl, payload, cfg.UserAgent,
-                (status, code, flagsRev) => OnSendComplete(status, code, flagsRev, token));
+                (status, code, body, flagsRev) => OnSendComplete(status, code, body, flagsRev, token));
         }
 
         /// <summary>Frame/interval driver: interval flush, backoff retries, send watchdog.</summary>
@@ -521,6 +548,264 @@ namespace Brightmotion.AgentHog.Core
         public void RecordMouseMove() { mouseMoved = true; }
         public void RecordScrollWheel() { anyScroll = true; }
 
+        // ---- install attribution ----
+
+        /// <summary>
+        /// Kick off the once-per-install referrer read. Called by the facade right after
+        /// construction (never from the ctor — a synchronously-resolving provider must see a
+        /// fully built client). The session's first flush waits for the callback, capped at
+        /// InstallReferrerTimeoutMs. The done-flag guard fails CLOSED on a storage error
+        /// (skip, don't re-read a ~90-day-old referrer onto a return session); the flag itself
+        /// is written only after a 2xx confirmed the install context reached the server, so
+        /// timeouts, dropped batches, and offline kills all retry next launch.
+        /// </summary>
+        public void BeginInstallReferrerRead()
+        {
+            if (cfg.InstallReferrerProvider == null) return;
+            if (installReferrer != null) return; // adopted from a crashed run's snapshot, or a requery
+            string done;
+            try { done = store.Get(KeyReferrerDone); }
+            catch (Exception e) { log("referrer done-flag unreadable — skipping read: " + e.Message); return; }
+            if (!string.IsNullOrEmpty(done)) return;
+            if (OutboxCarriesInstall()) return; // a packaged attempt from a previous launch is still settling
+            installReadPending = true;
+            installGateUntilMs = clock.NowMs + cfg.InstallReferrerTimeoutMs;
+            installReadSessionId = sessionId;
+            try
+            {
+                cfg.InstallReferrerProvider(OnInstallReferrerRead);
+            }
+            catch (Exception e)
+            {
+                // provider blew up == transient failure: no flag, retry next launch
+                installReadPending = false;
+                installGateUntilMs = 0;
+                log("install referrer provider failed: " + e.Message);
+            }
+        }
+
+        public void OnAttribution(Action<InstallAttribution> callback)
+        {
+            if (callback == null) return;
+            if (!AttributionPossible()) return; // no result will ever arrive — don't pin the closure
+            attributionCallbacks.Add(callback);
+            DeliverAttribution();
+        }
+
+        /// <summary>A result is known, or something is still in flight that could produce one.</summary>
+        bool AttributionPossible()
+            => attribution != null || installReadPending || installReferrer != null || OutboxCarriesInstall();
+
+        void OnInstallReferrerRead(InstallReferrerResult result)
+        {
+            if (!installReadPending) return; // double-callback guard
+            installReadPending = false;
+            installGateUntilMs = 0;
+            if (result == null || string.IsNullOrEmpty(result.Referrer))
+            {
+                TrySet(KeyReferrerDone, "1"); // no referrer is a permanent answer, even late
+                if (!AttributionPossible()) attributionCallbacks.Clear();
+                return;
+            }
+            if (installWindowClosed || sessionId != installReadSessionId)
+            {
+                // the install session's context is frozen (or gone) — attribution must not
+                // stamp a later session; retry next launch
+                log("install referrer read lost the first-batch race — retrying next launch");
+                return;
+            }
+            installReferrer = result.Referrer;
+            installClickTs = result.ClickTs;
+            installBeginTs = result.InstallBeginTs;
+            installRequery = false;
+            installUtms = Referrer.UtmParams(result.Referrer);
+            contextPending = true;
+            PersistQueue(); // a kill before the first flush must carry the referrer with the snapshot
+            log("install referrer read (" + result.Referrer.Length + " chars)");
+        }
+
+        JsonObj BuildInstallObj()
+        {
+            var obj = new JsonObj().Add("referrer", installReferrer);
+            if (installClickTs.HasValue) obj.Add("clickTs", installClickTs.Value);
+            if (installBeginTs.HasValue) obj.Add("installBeginTs", installBeginTs.Value);
+            if (installRequery) obj.Add("requery", true);
+            return obj;
+        }
+
+        void AdoptInstall(Dictionary<string, object> install)
+        {
+            string referrer = Str(install, "referrer");
+            if (string.IsNullOrEmpty(referrer)) return;
+            installReferrer = referrer;
+            long click = LongOf(install, "clickTs");
+            installClickTs = click > 0 ? click : (long?)null;
+            long begin = LongOf(install, "installBeginTs");
+            installBeginTs = begin > 0 ? begin : (long?)null;
+            installRequery = install.TryGetValue("requery", out var rq) && rq is bool rb && rb;
+            installUtms = installRequery
+                ? new List<KeyValuePair<string, string>>() : Referrer.UtmParams(referrer);
+        }
+
+        static JsonObj InstallObjFromDict(Dictionary<string, object> install)
+        {
+            var obj = new JsonObj().Add("referrer", Str(install, "referrer"));
+            long click = LongOf(install, "clickTs");
+            if (click > 0) obj.Add("clickTs", click);
+            long begin = LongOf(install, "installBeginTs");
+            if (begin > 0) obj.Add("installBeginTs", begin);
+            if (install.TryGetValue("requery", out var rq) && rq is bool rb && rb) obj.Add("requery", true);
+            return obj;
+        }
+
+        List<KeyValuePair<string, string>> MergedLandingExtras() => MergeExtras(installUtms, landingExtras);
+
+        /// <summary>Explicit SetLandingParams keys win over referrer UTMs; the deep-link URL's
+        /// own params keep top precedence via AppendExtraParams.</summary>
+        static List<KeyValuePair<string, string>> MergeExtras(
+            List<KeyValuePair<string, string>> utms, List<KeyValuePair<string, string>> extras)
+        {
+            if (utms.Count == 0) return extras;
+            var merged = new List<KeyValuePair<string, string>>(utms.Count + extras.Count);
+            foreach (var utm in utms)
+            {
+                var entry = utm;
+                foreach (var kv in extras)
+                    if (kv.Key == utm.Key) { entry = kv; break; }
+                merged.Add(entry);
+            }
+            foreach (var kv in extras)
+            {
+                bool shadowed = false;
+                foreach (var utm in utms)
+                    if (utm.Key == kv.Key) { shadowed = true; break; }
+                if (!shadowed) merged.Add(kv);
+            }
+            return merged;
+        }
+
+        /// <summary>Settle a delivered payload's install context: write the once-per-install
+        /// flag (requery re-asks stamp nothing) and adopt the server's attribution answer.</summary>
+        void OnInstallDelivered(string payload, string body)
+        {
+            var install = InstallFromPayload(payload);
+            if (install == null) return;
+            bool requery = install.TryGetValue("requery", out var rq) && rq is bool rb && rb;
+            if (!requery) TrySet(KeyReferrerDone, "1");
+            // delivered — later context re-sends this session must not resubmit it (the UTMs
+            // stay so a re-sent landingUrl keeps its shape); a pending answer re-asks from
+            // the cache next launch
+            installReferrer = null;
+            installClickTs = null;
+            installBeginTs = null;
+            installRequery = false;
+            var result = ParseAttribution(body);
+            if (result != null) AdoptAttribution(result, Str(install, "referrer"));
+            else if (!AttributionPossible()) attributionCallbacks.Clear();
+        }
+
+        bool OutboxCarriesInstall()
+        {
+            foreach (string payload in outbox)
+                if (InstallFromPayload(payload) != null)
+                    return true;
+            return false;
+        }
+
+        static Dictionary<string, object> InstallFromPayload(string payload)
+        {
+            if (payload == null || payload.IndexOf("\"install\":", StringComparison.Ordinal) < 0) return null;
+            if (!(Json.Parse(payload) is Dictionary<string, object> root)) return null;
+            if (!(root.TryGetValue("context", out var c) && c is Dictionary<string, object> context)) return null;
+            return context.TryGetValue("install", out var i) ? i as Dictionary<string, object> : null;
+        }
+
+        static InstallAttribution ParseAttribution(string body)
+        {
+            if (string.IsNullOrEmpty(body)) return null;
+            if (!(Json.Parse(body) is Dictionary<string, object> root)) return null;
+            return root.TryGetValue("attribution", out var a)
+                ? AttributionFromDict(a as Dictionary<string, object>) : null;
+        }
+
+        static InstallAttribution AttributionFromDict(Dictionary<string, object> dict)
+        {
+            if (dict == null || !(dict.TryGetValue("source", out var s) && s is string source)) return null;
+            var result = new InstallAttribution { Source = source, Utm = new Dictionary<string, string>() };
+            if (dict.TryGetValue("utm", out var u) && u is Dictionary<string, object> utm)
+                foreach (var kv in utm)
+                    if (kv.Value is string sv) result.Utm[kv.Key] = sv;
+            if (dict.TryGetValue("meta", out var m)) result.Meta = m as Dictionary<string, object>;
+            result.Pending = dict.TryGetValue("pending", out var p) && p is bool pb && pb;
+            return result;
+        }
+
+        // The referrer is cached alongside a pending result so later launches can requery
+        // once the project's decryption key exists; dropped as soon as the result resolves.
+        void AdoptAttribution(InstallAttribution result, string referrer)
+        {
+            attribution = result;
+            var wrapper = new JsonObj().Add("result", AttributionToObj(result));
+            if (result.Pending && !string.IsNullOrEmpty(referrer)) wrapper.Add("referrer", referrer);
+            TrySet(KeyAttribution, Json.Serialize(wrapper));
+            DeliverAttribution();
+        }
+
+        /// <summary>A throwing store (WebGL quota, …) must never escape into the transport
+        /// callback — an unsettled outbox head would re-send an already-delivered batch.</summary>
+        void TrySet(string key, string value)
+        {
+            try { store.Set(key, value); }
+            catch (Exception e) { log("store write failed (" + key + "): " + e.Message); }
+        }
+
+        static JsonObj AttributionToObj(InstallAttribution result)
+        {
+            return new JsonObj()
+                .Add("source", result.Source)
+                .Add("utm", result.Utm)
+                .Add("meta", result.Meta)
+                .Add("pending", result.Pending);
+        }
+
+        void DeliverAttribution()
+        {
+            if (attribution == null || attributionCallbacks.Count == 0) return;
+            var callbacks = attributionCallbacks.ToArray();
+            attributionCallbacks.Clear();
+            foreach (var callback in callbacks)
+            {
+                try { callback(attribution); }
+                catch (Exception e) { log("attribution callback threw: " + e.Message); }
+            }
+        }
+
+        void LoadAttributionCache()
+        {
+            string stored;
+            try { stored = store.Get(KeyAttribution); }
+            catch (Exception) { return; }
+            if (string.IsNullOrEmpty(stored)) return;
+            var wrapper = Json.Parse(stored) as Dictionary<string, object>;
+            var result = wrapper != null && wrapper.TryGetValue("result", out var r)
+                ? AttributionFromDict(r as Dictionary<string, object>) : null;
+            if (result == null)
+            {
+                try { store.Delete(KeyAttribution); } // corrupt — purge, stay unknown
+                catch (Exception) { }
+                return;
+            }
+            attribution = result;
+            string referrer = wrapper != null ? Str(wrapper, "referrer") : null;
+            if (result.Pending && !string.IsNullOrEmpty(referrer))
+            {
+                // re-ask on this session's first context send — the server may have its
+                // decryption key by now; requery computes and returns but stamps nothing
+                installReferrer = referrer;
+                installRequery = true;
+            }
+        }
+
         // ---- internals ----
 
         void Enqueue(string type, string name, Dictionary<string, object> props)
@@ -575,6 +860,7 @@ namespace Brightmotion.AgentHog.Core
         bool PackageLiveState()
         {
             if (queue.Count == 0 && pendingIdentify == null) return false;
+            if (contextPending) installWindowClosed = true; // context frozen; a late referrer read can't join it
             AppendToOutbox(BuildLiveBatch());
             queue.Clear();
             pendingIdentify = null;
@@ -588,7 +874,10 @@ namespace Brightmotion.AgentHog.Core
             outbox.Add(payload);
             if (outbox.Count > OutboxCap)
             {
-                outbox.RemoveAt(0); // pathological offline runs: cap disk, keep newest
+                // pathological offline runs: cap disk, keep newest — but never the in-flight
+                // head, or OnSendComplete would settle (and stamp install state for) a
+                // payload that was never sent
+                outbox.RemoveAt(inFlight ? 1 : 0);
                 log("outbox cap hit, dropped oldest batch");
             }
             PersistOutbox();
@@ -605,6 +894,13 @@ namespace Brightmotion.AgentHog.Core
             anyScroll = false;
             firstInteractionMs = null;
             landingExtras.Clear();
+            // attribution belongs to the install SESSION; later sessions read direct
+            installReferrer = null;
+            installClickTs = null;
+            installBeginTs = null;
+            installRequery = false;
+            installUtms.Clear();
+            installWindowClosed = false;
             store.Set(KeySessionId, sessionId);
             store.Set(KeyActivity, now.ToString(CultureInfo.InvariantCulture));
             store.Set(KeySessionStart, now.ToString(CultureInfo.InvariantCulture));
@@ -616,7 +912,7 @@ namespace Brightmotion.AgentHog.Core
             store.Set(KeyActivity, now.ToString(CultureInfo.InvariantCulture));
         }
 
-        void OnSendComplete(TransportStatus status, int code, string flagsRev, int token)
+        void OnSendComplete(TransportStatus status, int code, string body, string flagsRev, int token)
         {
             if (token != sendToken || !inFlight)
             {
@@ -629,7 +925,11 @@ namespace Brightmotion.AgentHog.Core
                 case TransportStatus.Success:
                     backoffMs = 0;
                     retryAtMs = 0;
-                    if (outbox.Count > 0) outbox.RemoveAt(0);
+                    if (outbox.Count > 0)
+                    {
+                        OnInstallDelivered(outbox[0], body);
+                        outbox.RemoveAt(0);
+                    }
                     PersistOutbox();
                     OnFlagsRev(flagsRev);
                     break;
@@ -658,7 +958,11 @@ namespace Brightmotion.AgentHog.Core
                 .Add("anonId", anonId)
                 .Add("sessionId", sessionId);
             if (contextPending)
-                root.Add("context", BuildContext(firstPath, registered, landingExtras));
+            {
+                var context = BuildContext(firstPath, registered, MergedLandingExtras());
+                if (installReferrer != null) context.Add("install", BuildInstallObj());
+                root.Add("context", context);
+            }
             root.Add("behavior", new JsonObj()
                 .Add("mouseMoved", mouseMoved)
                 .Add("anyScroll", anyScroll)
@@ -744,6 +1048,7 @@ namespace Brightmotion.AgentHog.Core
                 .Add("sessionStartMs", sessionStartMs)
                 .Add("registered", registered)
                 .Add("landingExtras", ExtrasToObj())
+                .Add("install", installReferrer != null ? BuildInstallObj() : null)
                 .Add("behavior", new JsonObj()
                     .Add("mouseMoved", mouseMoved)
                     .Add("anyScroll", anyScroll)
@@ -779,6 +1084,9 @@ namespace Brightmotion.AgentHog.Core
             if (snap.TryGetValue("landingExtras", out var ex) && ex is Dictionary<string, object> exd)
                 foreach (var kv in exd)
                     if (kv.Value is string sv) landingExtras.Add(new KeyValuePair<string, string>(kv.Key, sv));
+            // a read from the crashed run whose install batch never flushed — resume it, don't re-read
+            if (snap.TryGetValue("install", out var inst) && inst is Dictionary<string, object> instd)
+                AdoptInstall(instd);
             if (snap.TryGetValue("behavior", out var beh) && beh is Dictionary<string, object> behd)
             {
                 mouseMoved = behd.TryGetValue("mouseMoved", out var mm) && mm is bool mb && mb;
@@ -812,7 +1120,24 @@ namespace Brightmotion.AgentHog.Core
                 if (snap.TryGetValue("landingExtras", out var ex) && ex is Dictionary<string, object> exd)
                     foreach (var kv in exd)
                         if (kv.Value is string sv) extras.Add(new KeyValuePair<string, string>(kv.Key, sv));
-                root.Add("context", BuildContext(Str(snap, "firstPath"), reg, extras));
+                // the dead session read a referrer it never delivered: it ships here, under the
+                // install session's ids — NOT re-read onto the next session
+                Dictionary<string, object> instd =
+                    snap.TryGetValue("install", out var inst) ? inst as Dictionary<string, object> : null;
+                string snapReferrer = instd != null ? Str(instd, "referrer") : null;
+                if (string.IsNullOrEmpty(snapReferrer))
+                {
+                    root.Add("context", BuildContext(Str(snap, "firstPath"), reg, extras));
+                }
+                else
+                {
+                    bool snapRequery = instd.TryGetValue("requery", out var rq) && rq is bool rb && rb;
+                    var utms = snapRequery
+                        ? new List<KeyValuePair<string, string>>() : Referrer.UtmParams(snapReferrer);
+                    var context = BuildContext(Str(snap, "firstPath"), reg, MergeExtras(utms, extras));
+                    context.Add("install", InstallObjFromDict(instd));
+                    root.Add("context", context);
+                }
             }
             if (snap.TryGetValue("behavior", out var beh) && beh is Dictionary<string, object> behd)
                 root.Add("behavior", behd);
