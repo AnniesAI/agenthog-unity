@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.0] — 2026-08-17
+
+No functional change — version bump to stay in lockstep with core 0.3.0 (feature flags),
+since both packages ship from the same repo tag.
+
 ## [0.2.0] — 2026-08-12
 
 Initial release (versioned in lockstep with the core package).

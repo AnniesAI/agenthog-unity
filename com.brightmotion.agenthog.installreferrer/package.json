@@ -1,6 +1,6 @@
 {
   "name": "com.brightmotion.agenthog.installreferrer",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "displayName": "AgentHog Install Referrer (Android)",
   "description": "Optional Play Install Referrer reader for AgentHog Analytics: automatic install attribution on Android. Carries the com.android.installreferrer Gradle dependency so the core AgentHog package stays free of native dependencies.",
   "unity": "2021.3",
@@ -15,7 +15,7 @@
     "name": "Brightmotion"
   },
   "dependencies": {
-    "com.brightmotion.agenthog": "0.2.0"
+    "com.brightmotion.agenthog": "0.3.0"
   },
   "documentationUrl": "https://github.com/AnniesAI/agenthog-unity"
 }
