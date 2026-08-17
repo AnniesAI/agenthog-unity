@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0] — 2026-08-17
+
+Feature flags & experiments (agent-hog `docs/EXPERIMENTS_PLAN.md`; bucketing spec + canonical
+vectors in agent-hog `CONTRACTS.md` — `FlagsTests` pins them against the web reference).
+
+- `AgentHog.Flag(key)` → assigned variant (or null = your code default), `FlagOn(key)` for
+  boolean flags. Deterministic FNV-1a bucketing per player, evaluated locally — no per-read
+  network round trip, same variant across sessions and offline play.
+- Ruleset from `GET /sdk/flags`, loaded lazily (first `Flag()`/`FlagsReady()` call) and cached
+  in PlayerPrefs for flicker-free relaunches; refreshed when an ingest response's
+  `x-agh-flags-rev` header moves. Games that never use flags generate zero flag traffic.
+- Automatic exposure: first read per flag per session emits one `$exposure` event and stamps
+  `$ff/<key>` onto every subsequent event — `ah funnel <name> --by flag:<key>` just works.
+- `AgentHog.FlagsReady(cb)` to gate the first read; `OverrideFlag(key, variant)` for QA
+  (persisted, wins even before the ruleset loads, never emits exposure data).
+- Internal: `ITransport` grew `Fetch` and the `Send` callback now carries the flags revision
+  alongside the response body.
+
 ## [0.2.0] — 2026-08-12
 
 Automatic install attribution (Android).

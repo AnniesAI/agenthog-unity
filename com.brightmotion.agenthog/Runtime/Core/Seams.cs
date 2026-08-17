@@ -29,13 +29,20 @@ namespace Brightmotion.AgentHog.Core
     }
 
     /// <summary>
-    /// Async single-request transport (UnityWebRequest coroutine in production). The callback
-    /// must be invoked on the same thread the client runs on (Unity main thread). `body` is
-    /// the response text on success (the ingest answer to an install batch), else null.
+    /// Async single-request transport (UnityWebRequest coroutine in production). Callbacks
+    /// must be invoked on the same thread the client runs on (Unity main thread).
     /// </summary>
     internal interface ITransport
     {
-        void Send(string url, string json, string userAgent, Action<TransportStatus, int, string> callback);
+        /// <summary>POST an ingest batch. `body` is the response text on success (the ingest
+        /// answer to an install batch), else null. flagsRev = the response's x-agh-flags-rev
+        /// header (the flag-ruleset revision every ingest response carries), null when
+        /// absent.</summary>
+        void Send(string url, string json, string userAgent, Action<TransportStatus, int, string, string> callback);
+
+        /// <summary>GET a small JSON resource (the /sdk/flags ruleset). Callback gets the HTTP
+        /// status (0 on network error) and the response body (null when unavailable).</summary>
+        void Fetch(string url, string userAgent, Action<int, string> callback);
     }
 
     /// <summary>Device/environment facts the Unity layer supplies for session context.</summary>

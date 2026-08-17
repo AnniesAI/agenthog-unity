@@ -44,18 +44,27 @@ namespace Brightmotion.AgentHog.Tests
     internal sealed class FakeTransport : ITransport
     {
         public readonly List<SentBatch> Sent = new List<SentBatch>();
-        public readonly List<Action<TransportStatus, int, string>> Pending =
-            new List<Action<TransportStatus, int, string>>();
+        public readonly List<Action<TransportStatus, int, string, string>> Pending =
+            new List<Action<TransportStatus, int, string, string>>();
 
         /// <summary>When true (default), sends complete synchronously with NextStatus.</summary>
         public bool AutoComplete = true;
         public TransportStatus NextStatus = TransportStatus.Success;
         public int NextCode = 204;
         public string NextBody;
+        /// <summary>x-agh-flags-rev echoed on successful sends (null = header absent).</summary>
+        public string NextFlagsRev;
         /// <summary>Per-batch responder; overrides Next* when set.</summary>
         public Func<SentBatch, (TransportStatus status, int code, string body)> Respond;
 
-        public void Send(string url, string json, string userAgent, Action<TransportStatus, int, string> callback)
+        // ---- /sdk/flags fetches ----
+        public readonly List<string> FetchUrls = new List<string>();
+        public readonly List<Action<int, string>> PendingFetch = new List<Action<int, string>>();
+        public bool AutoCompleteFetch = true;
+        public int FlagsCode = 200;
+        public string FlagsBody; // null + AutoCompleteFetch = fetch fails
+
+        public void Send(string url, string json, string userAgent, Action<TransportStatus, int, string, string> callback)
         {
             var batch = new SentBatch
             {
@@ -66,15 +75,29 @@ namespace Brightmotion.AgentHog.Tests
             };
             Sent.Add(batch);
             var (status, code, body) = Respond != null ? Respond(batch) : (NextStatus, NextCode, NextBody);
-            if (AutoComplete) callback(status, code, body);
+            if (AutoComplete) callback(status, code, body, NextFlagsRev);
             else Pending.Add(callback);
         }
 
-        public void CompleteOldest(TransportStatus status, int code, string body = null)
+        public void CompleteOldest(TransportStatus status, int code, string body = null, string flagsRev = null)
         {
             var cb = Pending[0];
             Pending.RemoveAt(0);
-            cb(status, code, body);
+            cb(status, code, body, flagsRev);
+        }
+
+        public void Fetch(string url, string userAgent, Action<int, string> callback)
+        {
+            FetchUrls.Add(url);
+            if (AutoCompleteFetch) callback(FlagsBody != null ? FlagsCode : 0, FlagsBody);
+            else PendingFetch.Add(callback);
+        }
+
+        public void CompleteOldestFetch(int code, string body)
+        {
+            var cb = PendingFetch[0];
+            PendingFetch.RemoveAt(0);
+            cb(code, body);
         }
 
         static Dictionary<string, object> Json_Parse(string json)

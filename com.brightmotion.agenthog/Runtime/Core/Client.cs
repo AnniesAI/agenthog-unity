@@ -49,6 +49,9 @@ namespace Brightmotion.AgentHog.Core
         const string KeySessionStart = "agh_sstart"; // SDK-internal, not part of the web key set
         const string KeyQueue = "agh_queue";         // live (unpackaged) state snapshot
         const string KeyOutbox = "agh_outbox";       // packaged-but-unsettled payloads, FIFO
+        const string KeyFlags = "agh_flags";         // cached flag ruleset json (same key set as web/RN)
+        const string KeyExposed = "agh_exp";         // $exposure dedupe: { sid, keys } — one per flag per session
+        const string KeyOverrides = "agh_flag_ovr";  // dev/test overrides: { flagKey: variant }
         const string KeyReferrerDone = "agh_ref";    // install-referrer delivered ('1') — once per install
         const string KeyAttribution = "agh_attr";    // cached attribution result (json wrapper)
         const int HardQueueCap = 500;                // server per-batch max
@@ -99,6 +102,18 @@ namespace Brightmotion.AgentHog.Core
         bool anyScroll;
         long? firstInteractionMs;
 
+        // feature flags (agent-hog docs/EXPERIMENTS_PLAN.md §3; bucketing spec in Flags.cs).
+        // The ruleset loads LAZILY — from the store at construction, else fetched on the
+        // first Flag()/FlagsReady() call or when an ingest response's x-agh-flags-rev moves.
+        // Games that never touch flags generate zero flag traffic.
+        FlagsConfig flagsConfig;
+        readonly Dictionary<string, string> flagOverrides = new Dictionary<string, string>();
+        string exposedSid = "";
+        readonly HashSet<string> exposedKeys = new HashSet<string>();
+        readonly List<Action> flagsReadyCallbacks = new List<Action>();
+        bool flagsFetchInFlight;
+        readonly string flagsUrl;
+
         bool inFlight;
         int sendToken;                                     // stale-callback guard (watchdog re-sends)
         long inFlightStartedMs;
@@ -124,6 +139,24 @@ namespace Brightmotion.AgentHog.Core
             this.newId = newId ?? (() => Guid.NewGuid().ToString());
             this.log = log ?? (_ => { });
             ingestUrl = cfg.Host + "/ingest";
+            flagsUrl = cfg.Host + "/sdk/flags?project=" + Uri.EscapeDataString(cfg.ProjectKey ?? "");
+
+            // last-run flag state: cached ruleset (instant evaluation, no flicker), overrides,
+            // and the session-scoped exposure dedupe set
+            flagsConfig = FlagsConfig.Parse(store.Get(KeyFlags));
+            if (Json.Parse(store.Get(KeyOverrides)) is Dictionary<string, object> ovr)
+                foreach (var kv in ovr)
+                    if (kv.Value is string sv)
+                        flagOverrides[kv.Key] = sv;
+            if (Json.Parse(store.Get(KeyExposed)) is Dictionary<string, object> exp
+                && exp.TryGetValue("sid", out var esid) && esid is string es)
+            {
+                exposedSid = es;
+                if (exp.TryGetValue("keys", out var ek) && ek is List<object> eks)
+                    foreach (var item in eks)
+                        if (item is string ks)
+                            exposedKeys.Add(ks);
+            }
 
             long now = clock.NowMs;
             anonId = store.Get(KeyAnonId);
@@ -277,6 +310,136 @@ namespace Brightmotion.AgentHog.Core
             Enqueue("click", "click: " + label, props);
         }
 
+        // ---- feature flags ----
+
+        /// <summary>Assigned variant key for a flag, or null when the code fallback applies
+        /// (no ruleset yet, unknown/disabled flag, outside the traffic allocation). Boolean
+        /// flags resolve to "on"; the facade's FlagOn() collapses that to a bool.</summary>
+        public string Flag(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return null;
+            // rotate a stale session BEFORE the exposure dedupe reads sessionId — otherwise
+            // the first read after an idle gap compares against the dead session and skips
+            // the new session's $exposure (reading a flag is not activity: no Touch here)
+            EnsureSessionFresh(clock.NowMs);
+            // dev/test overrides FIRST — they exist precisely for the states where evaluation
+            // can't answer (no ruleset yet, endpoint down, flag killed), and they never emit
+            // $exposure or $ff/ props
+            if (flagOverrides.TryGetValue(key, out var ov)) return ov;
+            if (flagsConfig == null)
+            {
+                FetchFlags(); // lazy first load — null now, live once it lands (FlagsReady)
+                return null;
+            }
+            var def = flagsConfig.Find(key);
+            if (def == null) return null;
+            string variant = FlagEval.Evaluate(def, anonId);
+            if (variant != null) RecordExposure(def.Key, variant);
+            return variant;
+        }
+
+        /// <summary>Invoke cb once a ruleset (cached or fetched) is loaded — or the fetch
+        /// failed, so callers fall back to code defaults rather than hanging.</summary>
+        public void FlagsReady(Action cb)
+        {
+            if (cb == null) return;
+            if (flagsConfig != null)
+            {
+                cb();
+                return;
+            }
+            flagsReadyCallbacks.Add(cb);
+            FetchFlags();
+        }
+
+        /// <summary>Dev/test override, persisted; null variant clears. Never emits exposure data.</summary>
+        public void OverrideFlag(string key, string variant)
+        {
+            if (string.IsNullOrEmpty(key)) return;
+            if (variant == null) flagOverrides.Remove(key);
+            else flagOverrides[key] = variant;
+            if (flagOverrides.Count == 0)
+            {
+                store.Delete(KeyOverrides);
+                return;
+            }
+            var obj = new JsonObj();
+            foreach (var kv in flagOverrides) obj.Add(kv.Key, kv.Value);
+            store.Set(KeyOverrides, Json.Serialize(obj));
+        }
+
+        void RecordExposure(string flagKey, string variant)
+        {
+            // $ff/<key> rides every subsequent event via registered props; deduped per value
+            // so a Flag() call in an Update() loop doesn't mark context dirty every frame
+            string prop = "$ff/" + flagKey;
+            if (!(registered.TryGetValue(prop, out var cur) && cur is string cs && cs == variant))
+            {
+                registered[prop] = variant;
+                contextPending = true;
+                PersistQueue();
+            }
+            // one $exposure per flag per session — "code READ the flag", the analysis join key
+            if (exposedSid != sessionId)
+            {
+                exposedSid = sessionId;
+                exposedKeys.Clear();
+            }
+            if (!exposedKeys.Add(flagKey)) return;
+            PersistExposed();
+            Enqueue("custom", "$exposure", new Dictionary<string, object> { { "flag", flagKey }, { "variant", variant } });
+        }
+
+        void PersistExposed()
+        {
+            var keys = new List<object>(exposedKeys.Count);
+            foreach (var k in exposedKeys) keys.Add(k);
+            store.Set(KeyExposed, Json.Serialize(new JsonObj().Add("sid", exposedSid).Add("keys", keys)));
+        }
+
+        void FetchFlags()
+        {
+            if (flagsFetchInFlight) return;
+            flagsFetchInFlight = true;
+            transport.Fetch(flagsUrl, cfg.UserAgent, (code, body) =>
+            {
+                flagsFetchInFlight = false;
+                if (code >= 200 && code < 300 && body != null)
+                {
+                    var parsed = FlagsConfig.Parse(body);
+                    if (parsed != null)
+                    {
+                        flagsConfig = parsed;
+                        store.Set(KeyFlags, body);
+                        log("flags ruleset rev " + parsed.Rev + " (" + parsed.Flags.Count + " flag(s))");
+                    }
+                }
+                else
+                {
+                    log("flags fetch failed (" + code + ")");
+                }
+                if (flagsReadyCallbacks.Count == 0) return;
+                // resolve even on failure — callers fall back to code defaults
+                var cbs = flagsReadyCallbacks.ToArray();
+                flagsReadyCallbacks.Clear();
+                foreach (var cb in cbs)
+                {
+                    try { cb(); }
+                    catch (Exception e) { log("FlagsReady callback threw: " + e.Message); }
+                }
+            });
+        }
+
+        /// <summary>x-agh-flags-rev off an ingest response: refetch when the server moved past
+        /// us. Rev "0" with no local ruleset means "project has no flags" — nothing to fetch.</summary>
+        void OnFlagsRev(string rev)
+        {
+            if (rev == null) return;
+            long r = FlagEval.ParseRev(rev);
+            if (r < 0) return;
+            if (flagsConfig == null ? r > 0 : r != flagsConfig.Rev) FetchFlags();
+        }
+
         public void Reset()
         {
             // package the old identity's tail FIRST — its payload freezes the old ids, so
@@ -312,7 +475,7 @@ namespace Brightmotion.AgentHog.Core
             lastFlushAttemptMs = now;
             log("send " + payload.Length + "B (outbox depth " + outbox.Count + ")");
             transport.Send(ingestUrl, payload, cfg.UserAgent,
-                (status, code, body) => OnSendComplete(status, code, body, token));
+                (status, code, body, flagsRev) => OnSendComplete(status, code, body, flagsRev, token));
         }
 
         /// <summary>Frame/interval driver: interval flush, backoff retries, send watchdog.</summary>
@@ -749,7 +912,7 @@ namespace Brightmotion.AgentHog.Core
             store.Set(KeyActivity, now.ToString(CultureInfo.InvariantCulture));
         }
 
-        void OnSendComplete(TransportStatus status, int code, string body, int token)
+        void OnSendComplete(TransportStatus status, int code, string body, string flagsRev, int token)
         {
             if (token != sendToken || !inFlight)
             {
@@ -768,6 +931,7 @@ namespace Brightmotion.AgentHog.Core
                         outbox.RemoveAt(0);
                     }
                     PersistOutbox();
+                    OnFlagsRev(flagsRev);
                     break;
                 case TransportStatus.PermanentError:
                     log("ingest rejected (" + code + "), dropping batch");
