@@ -100,6 +100,31 @@ code**, which is what makes the CLI's kill switch safe. `Flag()` is main-thread-
 returns `null` from worker threads. Full loop (experiments, results, rollout, retirement):
 https://hog.brightmotion.io/docs/experiments
 
+### In-game economy
+
+Virtual-currency tracking needs **no SDK feature** — currency moves are plain `Capture`
+events carrying three conventional props, and you declare which events source or sink which
+currency later, from the CLI, retroactively over all history:
+
+```csharp
+AgentHog.Capture("level_reward", new() {
+    ["currency"] = "coins",   // game-defined name (coins, gems, energy) — never ISO codes
+    ["amount"]   = 300,       // always positive; direction comes from the mapping, not the sign
+    ["balance"]  = 8400,      // holding after the transaction — optional, powers drift detection
+    ["level"]    = 12 });
+```
+
+```
+ah economy map --event level_reward --source
+ah economy map --event item_bought  --sink
+```
+
+Aggregate rapid pickups: a player vacuuming 300 coins across a level should produce **one**
+`level_reward` with `amount: 300`, not 300 events. Suggested event names, real-money (IAP)
+grants, multi-currency bundles, and reading the reports:
+**[hog.brightmotion.io/docs/economy](https://hog.brightmotion.io/docs/economy)**. The
+[ExampleGame](../ExampleGame) grants a `level_reward` on every win as a working reference.
+
 ### Config reference
 
 | Field | Default | Notes |
@@ -161,8 +186,10 @@ stays off entirely, and `SetLandingParams` remains the manual hook.
 
 Scene/screen views go over the wire as `pageview: <path>`, so goals, funnels, and
 entry/exit/bounce treat game traffic exactly like web traffic. Custom event names are sent
-verbatim — pick stable snake_case names (`level_start`, `iap_purchase`) and keep variable
-data in props.
+verbatim — pick stable snake_case names (`level_start`, `gems_purchased`) and keep variable
+data in props. For currency-moving events, prefer the suggested names in the
+[economy docs](https://hog.brightmotion.io/docs/economy) — `ah economy suggest`
+auto-detects them.
 
 ## Privacy
 

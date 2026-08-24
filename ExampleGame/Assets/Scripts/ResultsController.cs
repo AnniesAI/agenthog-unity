@@ -16,7 +16,9 @@ public class ResultsController : MonoBehaviour
         AgentHog.Screen(GameState.LastWin ? "/results/win" : "/results/lose");
         if (resultText != null)
             resultText.text = (GameState.LastWin ? "YOU WIN" : "TIME'S UP") +
-                              $"\n{GameState.LastHits} hits";
+                              $"\n{GameState.LastHits} hits" +
+                              (GameState.LastReward > 0 ? $"\n+{GameState.LastReward} coins" : "") +
+                              $"\n{GameState.Coins} coins total";
     }
 
     public void OnRetry() => SceneManager.LoadScene("Game");

@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+- Fix: `AgentHog.SdkVersion` still reported `0.2.0` in the User-Agent; now `0.3.0`,
+  matching the package version.
+- Docs: "In-game economy" README section — the `currency`/`amount`/`balance` event
+  convention and `ah economy map`, per hog.brightmotion.io/docs/economy. ExampleGame now
+  grants an aggregated `level_reward` on wins as a working reference. No SDK code changes —
+  economy events are plain `Capture` calls.
+
 ## [0.3.0] — 2026-08-17
 
 Feature flags & experiments (agent-hog `docs/EXPERIMENTS_PLAN.md`; bucketing spec + canonical

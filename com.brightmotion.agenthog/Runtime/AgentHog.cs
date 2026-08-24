@@ -17,7 +17,7 @@ namespace Brightmotion.AgentHog
     /// </summary>
     public static class AgentHog
     {
-        public const string SdkVersion = "0.2.0";
+        public const string SdkVersion = "0.3.0";
 
         static Client client;
         static AgentHogRunner runner;

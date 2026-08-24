@@ -12,7 +12,10 @@ integration docs: [hog.brightmotion.io/docs/integrate](https://hog.brightmotion.
   — optional Android companion that reads the Play Install Referrer for automatic install
   attribution; it alone carries the Gradle dependency, keeping the core native-free.
 - **[`ExampleGame/`](ExampleGame/)** — a tiny three-scene game (menu → tap-the-target →
-  results) exercising the whole SDK surface. Open it in Unity 6, press Play. It ships with
+  results) exercising the whole SDK surface, including the
+  [economy convention](https://hog.brightmotion.io/docs/economy) (an aggregated
+  `level_reward` with `currency`/`amount`/`balance` on wins). Open it in Unity 6, press
+  Play. It ships with
   a blank AgentHog config (SDK inert); to send real events, create
   `Assets/Resources/AgentHogSettingsLocal.asset` (gitignored) with your host + project key.
 
