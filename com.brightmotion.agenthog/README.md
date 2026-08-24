@@ -17,7 +17,7 @@ Cross-platform integration docs (web, React Native, Unity, event naming, trouble
 Add to `Packages/manifest.json` (or Package Manager → *Add package from git URL*):
 
 ```json
-"com.brightmotion.agenthog": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog#v0.3.0"
+"com.brightmotion.agenthog": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog#v0.3.1"
 ```
 
 Pin a tag. `#main` floats; game builds shouldn't.

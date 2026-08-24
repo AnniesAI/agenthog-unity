@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.1] — 2026-08-24
+
+No functional change — version bump to stay in lockstep with core 0.3.1 (SdkVersion
+User-Agent fix, economy docs), since both packages ship from the same repo tag.
+
 ## [0.3.0] — 2026-08-17
 
 No functional change — version bump to stay in lockstep with core 0.3.0 (feature flags),

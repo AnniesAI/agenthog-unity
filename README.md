@@ -22,7 +22,7 @@ integration docs: [hog.brightmotion.io/docs/integrate](https://hog.brightmotion.
 ## Install (in your game)
 
 ```json
-"com.brightmotion.agenthog": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog#v0.3.0"
+"com.brightmotion.agenthog": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog#v0.3.1"
 ```
 
 ## Development
