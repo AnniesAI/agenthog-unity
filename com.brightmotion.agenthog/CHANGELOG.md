@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0] — 2026-08-26
+
+Attribution attach — `AgentHog.SetAttribution(AhAttribution)`, the Unity half of agent-hog's
+`context.attribution` wire field (agent-hog `docs/ATTRIBUTION_ATTACH_PLAN.md`): hand the SDK
+a third-party attribution verdict (an MMP result, e.g. Singular's device attribution
+callback) and it stamps the session's `utm_*` columns server-side under the wire-format
+precedence (deep-link > attach > install-referrer).
+
+- Callable at any time: rides the first batch when called pre-flush, otherwise marks
+  context pending so the next flush on the normal cadence carries it — no forced flush.
+- Delivered once per distinct payload, confirmed end-to-end: the payload persists across
+  crashes and offline launches until a carrying batch gets a 2xx; repeating a delivered
+  payload is a no-op, a different payload (re-engagement) is a new delivery.
+- `Reset()` clears the pending payload and the delivered marker. `SetLandingParams` is
+  unchanged and stays the deep-link-params hook.
+- Golden fixture regenerated to carry `context.attribution` (values mirror agent-hog's
+  repo-local `attribution-golden-batch.json` for the cross-repo contract check).
+
 ## [0.3.1] — 2026-08-24
 
 - Fix: `AgentHog.SdkVersion` had been stuck at `0.2.0` since the 0.3.0 release, so the

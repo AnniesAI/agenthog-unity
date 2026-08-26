@@ -17,7 +17,7 @@ namespace Brightmotion.AgentHog
     /// </summary>
     public static class AgentHog
     {
-        public const string SdkVersion = "0.3.1";
+        public const string SdkVersion = "0.4.0";
 
         static Client client;
         static AgentHogRunner runner;
@@ -134,6 +134,19 @@ namespace Brightmotion.AgentHog
         /// </summary>
         public static void SetLandingParams(Dictionary<string, string> extras)
             => Run(() => client.SetLandingParams(extras));
+
+        /// <summary>
+        /// Attach a third-party attribution verdict (an MMP result, e.g. Singular's device
+        /// attribution callback) to the session as <c>context.attribution</c>. Callable at any
+        /// time: before the first flush it rides the first batch, after that it rides the next
+        /// flush on the normal cadence. Each distinct payload is delivered exactly once —
+        /// confirmed end-to-end and persisted across launches, so an offline or crashed run
+        /// retries next launch, and repeating an already-delivered payload is a no-op.
+        /// <see cref="AhAttribution.Provider"/> is required (no-op without it). Use
+        /// <see cref="SetLandingParams"/> only for deep-link params.
+        /// </summary>
+        public static void SetAttribution(AhAttribution attribution)
+            => Run(() => client.SetAttribution(attribution));
 
         /// <summary>
         /// Assigned variant for a feature flag (deterministic per player — agent-hog

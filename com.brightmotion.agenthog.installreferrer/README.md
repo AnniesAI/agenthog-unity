@@ -15,8 +15,8 @@ attribution signal a game has.
 Both packages, in `Packages/manifest.json` (pin the same tag):
 
 ```json
-"com.brightmotion.agenthog": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog#v0.3.1",
-"com.brightmotion.agenthog.installreferrer": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog.installreferrer#v0.3.1"
+"com.brightmotion.agenthog": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog#v0.4.0",
+"com.brightmotion.agenthog.installreferrer": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog.installreferrer#v0.4.0"
 ```
 
 ### The Gradle dependency

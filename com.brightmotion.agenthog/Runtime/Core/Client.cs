@@ -54,6 +54,8 @@ namespace Brightmotion.AgentHog.Core
         const string KeyOverrides = "agh_flag_ovr";  // dev/test overrides: { flagKey: variant }
         const string KeyReferrerDone = "agh_ref";    // install-referrer delivered ('1') — once per install
         const string KeyAttribution = "agh_attr";    // cached attribution result (json wrapper)
+        const string KeyAttach = "agh_cattr";        // pending SetAttribution payload (canonical json)
+        const string KeyAttachDone = "agh_cattr_done"; // hash of the last DELIVERED attach payload
         const int HardQueueCap = 500;                // server per-batch max
         const int OutboxCap = 20;                    // packaged batches kept for retry, drop-oldest
         const long BackoffStartMs = 2_000;
@@ -96,6 +98,10 @@ namespace Brightmotion.AgentHog.Core
         string installReadSessionId;                       // the read belongs to THIS session only
         InstallAttribution attribution;                    // last known result (cached or fresh)
         readonly List<Action<InstallAttribution>> attributionCallbacks = new List<Action<InstallAttribution>>();
+
+        // client attribution attach (SetAttribution) — context.attribution, delivered once per
+        // distinct payload; pending state persists across launches until a carrying 2xx
+        string attachPayload;                              // canonical json, null when nothing pending
 
         // behavior — cumulative per session, sent on every flush
         bool mouseMoved;
@@ -205,6 +211,7 @@ namespace Brightmotion.AgentHog.Core
                 registered[kv.Key] = kv.Value;
 
             LoadAttributionCache();
+            LoadAttachPending();
         }
 
         // ---- public surface (mirrors the RN client one-for-one) ----
@@ -299,6 +306,31 @@ namespace Brightmotion.AgentHog.Core
             // insert is onConflictDoNothing — a late re-send can't backfill utm columns), so
             // this never toggles contextPending; call it before the install session's first flush
             if (changed) PersistQueue();
+        }
+
+        /// <summary>
+        /// Attach an MMP verdict as context.attribution. Rides the next context send on the
+        /// normal cadence (the first batch when called pre-flush) — no forced flush. Each
+        /// distinct payload is delivered ONCE: the pending payload survives crashes/offline
+        /// launches until a carrying batch gets a 2xx, after which repeating the same payload
+        /// is a no-op; a different payload (re-engagement) is a new delivery. The server's
+        /// per-session write-once gate makes in-session repeats harmless.
+        /// </summary>
+        public void SetAttribution(AhAttribution a)
+        {
+            if (a == null || string.IsNullOrEmpty(a.Provider)) return;
+            string canonical = Json.Serialize(CanonicalAttach(a));
+            if (canonical == attachPayload) return; // identical verdict already pending
+            if (AttachHash(canonical) == DeliveredAttachHash())
+            {
+                log("attribution attach already delivered — ignoring repeat");
+                return;
+            }
+            attachPayload = canonical;
+            TrySet(KeyAttach, canonical);
+            contextPending = true;
+            PersistQueue();
+            log("attribution attach pending (" + a.Provider + ")");
         }
 
         public void EmitClick(string label, string selector, string text)
@@ -442,6 +474,11 @@ namespace Brightmotion.AgentHog.Core
 
         public void Reset()
         {
+            // the pending attach and its delivered-once marker go with the signed-out person
+            // — cleared BEFORE packaging so the goodbye batch can't re-deliver either
+            attachPayload = null;
+            try { store.Delete(KeyAttach); store.Delete(KeyAttachDone); }
+            catch (Exception e) { log("attach state clear failed: " + e.Message); }
             // package the old identity's tail FIRST — its payload freezes the old ids, so
             // nothing of the previous person can ever ship under the new anonId
             PackageLiveState();
@@ -806,6 +843,127 @@ namespace Brightmotion.AgentHog.Core
             }
         }
 
+        // ---- client attribution attach (SetAttribution) ----
+
+        void LoadAttachPending()
+        {
+            string stored;
+            try { stored = store.Get(KeyAttach); }
+            catch (Exception) { return; }
+            if (string.IsNullOrEmpty(stored)) return;
+            if (AttachFromDict(Json.Parse(stored) as Dictionary<string, object>) == null)
+            {
+                try { store.Delete(KeyAttach); } // corrupt — purge, nothing pending
+                catch (Exception) { }
+                return;
+            }
+            // an undelivered payload from a previous run rides this launch's first flush
+            attachPayload = stored;
+            contextPending = true;
+        }
+
+        /// <summary>Canonical wire/hash form: fixed key order, empty fields skipped, params
+        /// sorted by key — the delivered-once hash must be stable across runs and across a
+        /// serialize/parse round trip through the outbox.</summary>
+        static JsonObj CanonicalAttach(AhAttribution a)
+        {
+            var obj = new JsonObj().Add("provider", a.Provider);
+            if (!string.IsNullOrEmpty(a.UtmSource)) obj.Add("utm_source", a.UtmSource);
+            if (!string.IsNullOrEmpty(a.UtmMedium)) obj.Add("utm_medium", a.UtmMedium);
+            if (!string.IsNullOrEmpty(a.UtmCampaign)) obj.Add("utm_campaign", a.UtmCampaign);
+            if (!string.IsNullOrEmpty(a.UtmContent)) obj.Add("utm_content", a.UtmContent);
+            if (!string.IsNullOrEmpty(a.UtmTerm)) obj.Add("utm_term", a.UtmTerm);
+            if (a.Params != null && a.Params.Count > 0)
+            {
+                var keys = new List<string>();
+                foreach (var kv in a.Params)
+                    if (!string.IsNullOrEmpty(kv.Key) && !string.IsNullOrEmpty(kv.Value))
+                        keys.Add(kv.Key);
+                if (keys.Count > 0)
+                {
+                    keys.Sort(StringComparer.Ordinal);
+                    var prms = new JsonObj();
+                    foreach (var k in keys) prms.Add(k, a.Params[k]);
+                    obj.Add("params", prms);
+                }
+            }
+            return obj;
+        }
+
+        static AhAttribution AttachFromDict(Dictionary<string, object> dict)
+        {
+            if (dict == null) return null;
+            string provider = Str(dict, "provider");
+            if (string.IsNullOrEmpty(provider)) return null;
+            var a = new AhAttribution
+            {
+                Provider = provider,
+                UtmSource = Str(dict, "utm_source"),
+                UtmMedium = Str(dict, "utm_medium"),
+                UtmCampaign = Str(dict, "utm_campaign"),
+                UtmContent = Str(dict, "utm_content"),
+                UtmTerm = Str(dict, "utm_term"),
+            };
+            if (dict.TryGetValue("params", out var p) && p is Dictionary<string, object> pd && pd.Count > 0)
+            {
+                a.Params = new Dictionary<string, string>();
+                foreach (var kv in pd)
+                    if (kv.Value is string sv)
+                        a.Params[kv.Key] = sv;
+            }
+            return a;
+        }
+
+        JsonObj AttachObj()
+        {
+            // attachPayload is validated at both entry points; a null here would mean corrupt
+            // in-memory state — ship null rather than throw (the server drops it silently)
+            var a = AttachFromDict(Json.Parse(attachPayload) as Dictionary<string, object>);
+            return a == null ? null : CanonicalAttach(a);
+        }
+
+        /// <summary>Settle a delivered payload's attach: persist the delivered-once hash and,
+        /// when the pending payload is the one that just landed, clear it — a different
+        /// payload set meanwhile (re-engagement) stays pending for its own delivery.</summary>
+        void OnAttachDelivered(string payload)
+        {
+            var attach = AttachFromPayload(payload);
+            if (attach == null) return;
+            string hash = AttachHash(Json.Serialize(CanonicalAttach(attach)));
+            TrySet(KeyAttachDone, hash);
+            if (attachPayload == null || AttachHash(attachPayload) != hash) return;
+            attachPayload = null;
+            try { store.Delete(KeyAttach); }
+            catch (Exception e) { log("attach clear failed: " + e.Message); }
+        }
+
+        static AhAttribution AttachFromPayload(string payload)
+        {
+            if (payload == null || payload.IndexOf("\"attribution\":", StringComparison.Ordinal) < 0) return null;
+            if (!(Json.Parse(payload) is Dictionary<string, object> root)) return null;
+            if (!(root.TryGetValue("context", out var c) && c is Dictionary<string, object> context)) return null;
+            return context.TryGetValue("attribution", out var a)
+                ? AttachFromDict(a as Dictionary<string, object>) : null;
+        }
+
+        string DeliveredAttachHash()
+        {
+            try { return store.Get(KeyAttachDone); }
+            catch (Exception) { return null; } // unreadable — treat as undelivered (server gate dedupes)
+        }
+
+        /// <summary>FNV-1a 64 over the canonical payload, hex — small enough to persist.</summary>
+        internal static string AttachHash(string payload)
+        {
+            ulong h = 14695981039346656037UL;
+            foreach (char c in payload)
+            {
+                h = (h ^ (byte)c) * 1099511628211UL;
+                h = (h ^ (byte)(c >> 8)) * 1099511628211UL;
+            }
+            return h.ToString("x16", CultureInfo.InvariantCulture);
+        }
+
         // ---- internals ----
 
         void Enqueue(string type, string name, Dictionary<string, object> props)
@@ -928,6 +1086,7 @@ namespace Brightmotion.AgentHog.Core
                     if (outbox.Count > 0)
                     {
                         OnInstallDelivered(outbox[0], body);
+                        OnAttachDelivered(outbox[0]);
                         outbox.RemoveAt(0);
                     }
                     PersistOutbox();
@@ -961,6 +1120,7 @@ namespace Brightmotion.AgentHog.Core
             {
                 var context = BuildContext(firstPath, registered, MergedLandingExtras());
                 if (installReferrer != null) context.Add("install", BuildInstallObj());
+                if (attachPayload != null) context.Add("attribution", AttachObj());
                 root.Add("context", context);
             }
             root.Add("behavior", new JsonObj()
