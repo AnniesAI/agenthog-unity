@@ -152,6 +152,91 @@ namespace Brightmotion.AgentHog.Tests
         }
 
         [Test]
+        public void ReplayedVerdictStaysSuppressedAfterReEngagement()
+        {
+            // MMPs re-fire the cached install verdict on later launches; after a
+            // re-engagement verdict rotated through, the replay must STILL be a no-op
+            var rig = new Rig();
+            var client = rig.NewClient();
+            client.SetAttribution(Singular()); // A — install verdict, delivered
+            client.Capture("a", null);
+            client.Flush();
+            client.SetAttribution(new AhAttribution { Provider = "singular", UtmSource = "meta" }); // B
+            client.Capture("b", null);
+            client.Flush();
+
+            client.SetAttribution(Singular()); // A replayed
+            client.Capture("c", null);
+            client.Flush();
+            Assert.IsNull(rig.Transport.Sent[2].Attribution(),
+                "replayed install verdict must stay delivered-once past re-engagement");
+        }
+
+        [Test]
+        public void LateSettleAfterResetDoesNotClobberTheNewPersonsAttach()
+        {
+            var rig = new Rig();
+            rig.Transport.AutoComplete = false;
+            var client = rig.NewClient();
+            client.SetAttribution(Singular());
+            client.Capture("x", null);
+            client.Flush();                    // in flight, carries the attach under the OLD anonId
+            client.Reset();                    // new person: pending + delivered markers cleared
+            client.SetAttribution(Singular()); // the new person's own identical verdict
+            rig.Transport.CompleteOldest(TransportStatus.Success, 204); // old batch settles late
+
+            Assert.IsTrue(rig.Store.Data.ContainsKey(KeyAttach),
+                "old identity's settle must not clear the new person's pending attach");
+            Assert.IsFalse(rig.Store.Data.ContainsKey(KeyAttachDone),
+                "old identity's settle must not stamp the new person's delivered set");
+
+            client.Capture("y", null);
+            client.Flush();
+            var last = rig.Transport.Sent[rig.Transport.Sent.Count - 1];
+            Assert.AreEqual("singular", last.Attribution()["provider"],
+                "the new person's attach still delivers");
+        }
+
+        [Test]
+        public void IdleGapVerdictStampsTheFreshSessionNotTheExpiredTail()
+        {
+            var rig = new Rig();
+            var client = rig.NewClient();
+            client.Capture("x", null);
+            rig.Clock.Advance(31 * 60_000);    // foreground idle-out
+            client.SetAttribution(Singular()); // MMP callback fires after the gap
+            client.Capture("y", null);
+            client.Flush(); // ships the packaged old-session tail
+            client.Flush(); // ships the fresh session's first batch
+
+            var old = rig.Transport.Sent[0];
+            var fresh = rig.Transport.Sent[1];
+            Assert.AreNotEqual(old.SessionId(), fresh.SessionId(), "the gap must rotate the session");
+            Assert.IsNull(old.Attribution(), "the expired session's tail must not carry the late verdict");
+            Assert.AreEqual("singular", fresh.Attribution()["provider"]);
+        }
+
+        [Test]
+        public void DeliveredPayloadLeftInStoreDoesNotReArm()
+        {
+            var rig = new Rig();
+            var client = rig.NewClient();
+            client.SetAttribution(Singular());
+            string canonical = rig.Store.Data[KeyAttach];
+            client.Capture("x", null);
+            client.Flush(); // delivered — KeyAttach cleared
+
+            rig.Store.Data[KeyAttach] = canonical; // simulate a failed post-delivery clear
+            rig.Clock.Advance(31 * 60_000);
+            var next = rig.NewClient();
+            Assert.IsFalse(rig.Store.Data.ContainsKey(KeyAttach),
+                "an already-delivered payload must be purged at load, not re-armed");
+            next.Capture("open", null);
+            next.Flush();
+            Assert.IsNull(rig.Transport.Sent[1].Attribution());
+        }
+
+        [Test]
         public void UndeliveredPayloadRidesTheNextLaunchFirstFlush()
         {
             var rig = new Rig();

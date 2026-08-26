@@ -17,7 +17,7 @@ Cross-platform integration docs (web, React Native, Unity, event naming, trouble
 Add to `Packages/manifest.json` (or Package Manager → *Add package from git URL*):
 
 ```json
-"com.brightmotion.agenthog": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog#v0.3.1"
+"com.brightmotion.agenthog": "https://github.com/AnniesAI/agenthog-unity.git?path=com.brightmotion.agenthog#v0.4.0"
 ```
 
 Pin a tag. `#main` floats; game builds shouldn't.
@@ -180,8 +180,9 @@ How it works:
   offline first launch retries on the next one. iOS, editor, and standalone have no
   referrer — nothing is sent and callbacks never fire.
 
-No companion package (or your own `AgentHogConfig.InstallReferrer` provider) → attribution
-stays off entirely, and `SetLandingParams` remains the manual hook.
+No companion package (or your own `AgentHogConfig.InstallReferrer` provider) → automatic
+install attribution stays off entirely; hand the SDK an MMP verdict with `SetAttribution`
+(below) and deep-link params with `SetLandingParams`.
 
 ## MMP attribution attach (Singular, …)
 
@@ -209,9 +210,11 @@ SingularSDK.SetSingularDeviceAttributionCallbackHandler(info => {
 
 How it behaves:
 
-- **Callable at any time.** Before the first flush it rides the first batch; after that it
-  marks context pending, so the next flush on the normal cadence carries it — no forced
-  flush, no extra network traffic.
+- **Callable at any time** — even before `Init` (early attaches queue and deliver once the
+  SDK initializes). Before the first flush it rides the first batch; after that it marks
+  context pending, so the next flush on the normal cadence carries it — no forced flush,
+  no extra network traffic. Batches only ship when there are events, so a verdict landing
+  in an event-quiet run delivers on the next launch's first flush instead.
 - **Delivered once per distinct payload, confirmed end-to-end.** The payload persists
   across crashes and offline launches until a batch carrying it gets a 2xx. Repeating an
   already-delivered payload is a no-op; a *different* payload (a re-engagement verdict) is

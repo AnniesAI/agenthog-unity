@@ -25,6 +25,7 @@ namespace Brightmotion.AgentHog
         static readonly ConcurrentQueue<Action> crossThreadCalls = new ConcurrentQueue<Action>();
         static readonly List<Action<InstallAttribution>> preInitAttributionCallbacks =
             new List<Action<InstallAttribution>>();
+        static readonly List<AhAttribution> preInitAttaches = new List<AhAttribution>();
         static bool warnedUninitialized;
 
         /// <summary>
@@ -99,6 +100,18 @@ namespace Brightmotion.AgentHog
             if (earlyCallbacks != null)
                 foreach (var callback in earlyCallbacks)
                     client.OnAttribution(callback);
+            List<AhAttribution> earlyAttaches = null;
+            lock (preInitAttaches)
+            {
+                if (preInitAttaches.Count > 0)
+                {
+                    earlyAttaches = new List<AhAttribution>(preInitAttaches);
+                    preInitAttaches.Clear();
+                }
+            }
+            if (earlyAttaches != null)
+                foreach (var attach in earlyAttaches)
+                    client.SetAttribution(attach);
 
             if (config.Debug)
                 Debug.Log("[AgentHog] initialized: " + core.Host + " anon=" + client.AnonId + " session=" + client.SessionId);
@@ -142,11 +155,38 @@ namespace Brightmotion.AgentHog
         /// flush on the normal cadence. Each distinct payload is delivered exactly once —
         /// confirmed end-to-end and persisted across launches, so an offline or crashed run
         /// retries next launch, and repeating an already-delivered payload is a no-op.
-        /// <see cref="AhAttribution.Provider"/> is required (no-op without it). Use
+        /// <see cref="AhAttribution.Provider"/> is required (no-op without it). Safe before
+        /// Init — early attaches are queued and delivered when the SDK initializes. Use
         /// <see cref="SetLandingParams"/> only for deep-link params.
         /// </summary>
         public static void SetAttribution(AhAttribution attribution)
-            => Run(() => client.SetAttribution(attribution));
+        {
+            if (attribution == null || string.IsNullOrEmpty(attribution.Provider)) return;
+            // snapshot on the caller's thread: the payload is frozen at call time even when
+            // the call marshals cross-thread and the caller mutates/reuses the object after
+            var snapshot = new AhAttribution
+            {
+                Provider = attribution.Provider,
+                UtmSource = attribution.UtmSource,
+                UtmMedium = attribution.UtmMedium,
+                UtmCampaign = attribution.UtmCampaign,
+                UtmContent = attribution.UtmContent,
+                UtmTerm = attribution.UtmTerm,
+                Params = attribution.Params == null
+                    ? null : new Dictionary<string, string>(attribution.Params),
+            };
+            lock (preInitAttaches)
+            {
+                if (client == null)
+                {
+                    // an MMP verdict can beat Init in the launch race — a once-per-install
+                    // callback must not be dropped for it (mirrors OnAttribution)
+                    preInitAttaches.Add(snapshot);
+                    return;
+                }
+            }
+            Run(() => client.SetAttribution(snapshot));
+        }
 
         /// <summary>
         /// Assigned variant for a feature flag (deterministic per player — agent-hog
@@ -263,6 +303,7 @@ namespace Brightmotion.AgentHog
             client = null;
             warnedUninitialized = false;
             lock (preInitAttributionCallbacks) preInitAttributionCallbacks.Clear();
+            lock (preInitAttaches) preInitAttaches.Clear();
         }
     }
 }
