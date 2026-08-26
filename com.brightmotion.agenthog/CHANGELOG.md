@@ -8,11 +8,15 @@ a third-party attribution verdict (an MMP result, e.g. Singular's device attribu
 callback) and it stamps the session's `utm_*` columns server-side under the wire-format
 precedence (deep-link > attach > install-referrer).
 
-- Callable at any time: rides the first batch when called pre-flush, otherwise marks
+- Callable at any time — even before `Init` (early attaches queue and deliver at Init,
+  like `OnAttribution`): rides the first batch when called pre-flush, otherwise marks
   context pending so the next flush on the normal cadence carries it — no forced flush.
+  A verdict arriving after an idle gap rotates the session first and stamps the fresh one.
 - Delivered once per distinct payload, confirmed end-to-end: the payload persists across
   crashes and offline launches until a carrying batch gets a 2xx; repeating a delivered
-  payload is a no-op, a different payload (re-engagement) is a new delivery.
+  payload is a no-op, a different payload (re-engagement) is a new delivery. The SDK keeps
+  a bounded set of delivered hashes, so an MMP replaying its cached install verdict on
+  later launches stays suppressed even after re-engagement verdicts rotate through.
 - `Reset()` clears the pending payload and the delivered marker. `SetLandingParams` is
   unchanged and stays the deep-link-params hook.
 - Golden fixture regenerated to carry `context.attribution` (values mirror agent-hog's

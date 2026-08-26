@@ -95,8 +95,10 @@ namespace Brightmotion.AgentHog.Tests
             AgentHog.Screen("/x");
             AgentHog.Identify("a@b.c");
             AgentHog.Tag("t", 1);
+            AgentHog.SetAttribution(new AhAttribution { Provider = "singular" }); // queued, not dropped
             AgentHog.Flush();
             AgentHog.Reset();
+            AgentHog.ShutdownForTests(); // drop the queued attach so no later Init inherits it
         }
 
         [Test]

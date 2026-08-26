@@ -55,9 +55,10 @@ namespace Brightmotion.AgentHog.Core
         const string KeyReferrerDone = "agh_ref";    // install-referrer delivered ('1') — once per install
         const string KeyAttribution = "agh_attr";    // cached attribution result (json wrapper)
         const string KeyAttach = "agh_cattr";        // pending SetAttribution payload (canonical json)
-        const string KeyAttachDone = "agh_cattr_done"; // hash of the last DELIVERED attach payload
+        const string KeyAttachDone = "agh_cattr_done"; // hashes of DELIVERED attach payloads (json array)
         const int HardQueueCap = 500;                // server per-batch max
         const int OutboxCap = 20;                    // packaged batches kept for retry, drop-oldest
+        const int AttachDeliveredCap = 16;           // delivered attach hashes kept, drop-oldest
         const long BackoffStartMs = 2_000;
         const long BackoffCapMs = 60_000;
         const long SendTimeoutMs = 90_000;           // watchdog: a lost transport callback must not wedge us
@@ -100,8 +101,12 @@ namespace Brightmotion.AgentHog.Core
         readonly List<Action<InstallAttribution>> attributionCallbacks = new List<Action<InstallAttribution>>();
 
         // client attribution attach (SetAttribution) — context.attribution, delivered once per
-        // distinct payload; pending state persists across launches until a carrying 2xx
+        // distinct payload; pending state persists across launches until a carrying 2xx.
+        // The delivered set is a LIST, not a single slot: MMPs replay their cached install
+        // verdict on every launch, and it must stay suppressed even after re-engagement
+        // verdicts rotate through (A delivered, B delivered, A replayed → still a no-op)
         string attachPayload;                              // canonical json, null when nothing pending
+        readonly List<string> attachDelivered = new List<string>(); // oldest first
 
         // behavior — cumulative per session, sent on every flush
         bool mouseMoved;
@@ -319,9 +324,13 @@ namespace Brightmotion.AgentHog.Core
         public void SetAttribution(AhAttribution a)
         {
             if (a == null || string.IsNullOrEmpty(a.Provider)) return;
+            // rotate a stale session FIRST — a verdict arriving after an idle gap must stamp
+            // the fresh session, not ride the expired tail when it packages (receiving an
+            // MMP callback is not player activity: no Touch)
+            EnsureSessionFresh(clock.NowMs);
             string canonical = Json.Serialize(CanonicalAttach(a));
             if (canonical == attachPayload) return; // identical verdict already pending
-            if (AttachHash(canonical) == DeliveredAttachHash())
+            if (attachDelivered.Contains(AttachHash(canonical)))
             {
                 log("attribution attach already delivered — ignoring repeat");
                 return;
@@ -474,9 +483,10 @@ namespace Brightmotion.AgentHog.Core
 
         public void Reset()
         {
-            // the pending attach and its delivered-once marker go with the signed-out person
+            // the pending attach and its delivered-once markers go with the signed-out person
             // — cleared BEFORE packaging so the goodbye batch can't re-deliver either
             attachPayload = null;
+            attachDelivered.Clear();
             try { store.Delete(KeyAttach); store.Delete(KeyAttachDone); }
             catch (Exception e) { log("attach state clear failed: " + e.Message); }
             // package the old identity's tail FIRST — its payload freezes the old ids, so
@@ -847,13 +857,24 @@ namespace Brightmotion.AgentHog.Core
 
         void LoadAttachPending()
         {
+            try
+            {
+                if (Json.Parse(store.Get(KeyAttachDone)) is List<object> delivered)
+                    foreach (var item in delivered)
+                        if (item is string hash)
+                            attachDelivered.Add(hash);
+            }
+            catch (Exception) { } // unreadable markers — treat as none (the server gate dedupes)
             string stored;
             try { stored = store.Get(KeyAttach); }
             catch (Exception) { return; }
             if (string.IsNullOrEmpty(stored)) return;
-            if (AttachFromDict(Json.Parse(stored) as Dictionary<string, object>) == null)
+            // purge a corrupt payload — and an already-delivered one whose clear failed
+            // (log-only Delete in OnAttachDelivered), which must not re-arm every launch
+            if (AttachFromDict(Json.Parse(stored) as Dictionary<string, object>) == null
+                || attachDelivered.Contains(AttachHash(stored)))
             {
-                try { store.Delete(KeyAttach); } // corrupt — purge, nothing pending
+                try { store.Delete(KeyAttach); }
                 catch (Exception) { }
                 return;
             }
@@ -927,32 +948,33 @@ namespace Brightmotion.AgentHog.Core
         /// payload set meanwhile (re-engagement) stays pending for its own delivery.</summary>
         void OnAttachDelivered(string payload)
         {
-            var attach = AttachFromPayload(payload);
+            if (payload == null || payload.IndexOf("\"attribution\":", StringComparison.Ordinal) < 0) return;
+            if (!(Json.Parse(payload) is Dictionary<string, object> root)) return;
+            // identity guard: a batch packaged before Reset() settling late belongs to the
+            // OLD person — it must not stamp the new person's delivered set, nor clear a
+            // same-hash payload the new person set pending themselves
+            if (Str(root, "anonId") != anonId) return;
+            if (!(root.TryGetValue("context", out var c) && c is Dictionary<string, object> context)) return;
+            var attach = context.TryGetValue("attribution", out var a)
+                ? AttachFromDict(a as Dictionary<string, object>) : null;
             if (attach == null) return;
             string hash = AttachHash(Json.Serialize(CanonicalAttach(attach)));
-            TrySet(KeyAttachDone, hash);
+            if (!attachDelivered.Contains(hash))
+            {
+                attachDelivered.Add(hash);
+                if (attachDelivered.Count > AttachDeliveredCap) attachDelivered.RemoveAt(0);
+                TrySet(KeyAttachDone, Json.Serialize(attachDelivered));
+            }
             if (attachPayload == null || AttachHash(attachPayload) != hash) return;
             attachPayload = null;
             try { store.Delete(KeyAttach); }
             catch (Exception e) { log("attach clear failed: " + e.Message); }
         }
 
-        static AhAttribution AttachFromPayload(string payload)
-        {
-            if (payload == null || payload.IndexOf("\"attribution\":", StringComparison.Ordinal) < 0) return null;
-            if (!(Json.Parse(payload) is Dictionary<string, object> root)) return null;
-            if (!(root.TryGetValue("context", out var c) && c is Dictionary<string, object> context)) return null;
-            return context.TryGetValue("attribution", out var a)
-                ? AttachFromDict(a as Dictionary<string, object>) : null;
-        }
-
-        string DeliveredAttachHash()
-        {
-            try { return store.Get(KeyAttachDone); }
-            catch (Exception) { return null; } // unreadable — treat as undelivered (server gate dedupes)
-        }
-
-        /// <summary>FNV-1a 64 over the canonical payload, hex — small enough to persist.</summary>
+        /// <summary>FNV-1a 64 over the canonical payload, hex — small enough to persist.
+        /// The hash keys on Json.Serialize's exact byte output, so the writer's format
+        /// (escaping included) is load-bearing here: a format change re-keys every
+        /// already-delivered verdict and an MMP replay would re-ship it once.</summary>
         internal static string AttachHash(string payload)
         {
             ulong h = 14695981039346656037UL;

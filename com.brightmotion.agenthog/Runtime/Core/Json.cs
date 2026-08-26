@@ -10,6 +10,9 @@ namespace Brightmotion.AgentHog.Core
     /// Minimal JSON writer + parser (MiniJSON-style). Internal on purpose — the SDK's public
     /// surface never exposes JSON. Culture-invariant number formatting: the ingest contract is
     /// JSON, and "1,5" from a tr-TR/de-DE device would corrupt the batch.
+    /// The writer's exact byte output (escaping included) is load-bearing beyond the golden
+    /// fixture: Client.AttachHash persists hashes of serialized attribution payloads across
+    /// app updates, so a format change re-keys delivered verdicts (see AttachHash's doc).
     /// </summary>
     internal static class Json
     {
