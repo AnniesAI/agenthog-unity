@@ -67,6 +67,18 @@ namespace Brightmotion.AgentHog.Tests
             {
                 { "utm_source", "playstore" }, { "utm_campaign", "launch" },
             });
+            // values mirror agent-hog's scripts/fixtures/attribution-golden-batch.json so the
+            // cross-repo check exercises the same attach shape
+            client.SetAttribution(new AhAttribution
+            {
+                Provider = "singular",
+                UtmSource = "tiktokglobal_int",
+                UtmCampaign = "us-launch-aug",
+                Params = new Dictionary<string, string>
+                {
+                    { "campaign_id", "1204" }, { "click_timestamp", "1756100000" },
+                },
+            });
             client.Flush();
             return rig.Transport.Sent[0].Json;
         }

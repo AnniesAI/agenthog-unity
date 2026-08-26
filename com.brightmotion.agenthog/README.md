@@ -67,7 +67,8 @@ AgentHog.Screen("/settings/audio");            // manual screens for in-scene UI
 AgentHog.Identify(traits: new() { ["user_id"] = playerId });  // stitch identity (no email needed)
 AgentHog.Tag("ab_test", "variant_b");          // set one trait + emit "tag: ab_test"
 AgentHog.Register(new() { ["build_channel"] = "beta" });      // merged into every event
-AgentHog.SetLandingParams(new() { ["utm_source"] = "playstore" }); // manual attribution params — call before first flush
+AgentHog.SetLandingParams(new() { ["utm_source"] = "playstore" }); // deep-link params only — call before first flush
+AgentHog.SetAttribution(new AhAttribution { Provider = "singular", UtmSource = network }); // MMP verdict (see below)
 AgentHog.OnAttribution(a => { /* a.Source, a.Utm, a.Meta */ });    // install attribution result (see below)
 AgentHog.GetAttribution();                     // cached result, or null while unknown
 AgentHog.Flush();                              // force-send now
@@ -181,6 +182,47 @@ How it works:
 
 No companion package (or your own `AgentHogConfig.InstallReferrer` provider) → attribution
 stays off entirely, and `SetLandingParams` remains the manual hook.
+
+## MMP attribution attach (Singular, …)
+
+If a mobile measurement partner already attributes your installs, hand its verdict to
+AgentHog with `SetAttribution` — it ships as `context.attribution` and the server fills the
+session's `utm_*` columns under a fixed precedence (deep-link params > MMP attach >
+install-referrer stamp). Wiring Singular's device attribution callback at init is the whole
+integration:
+
+```csharp
+SingularSDK.SetSingularDeviceAttributionCallbackHandler(info => {
+    AgentHog.SetAttribution(new AhAttribution {
+        Provider = "singular",
+        UtmSource = info.TryGetValue("network", out var n) ? (string)n : null, // "organic" is safe: server ignores it
+        UtmCampaign = info.GetValueOrDefault("campaign_name") as string,
+        Params = new() {
+            ["campaign_id"] = info.GetValueOrDefault("campaign_id") as string ?? "",
+            ["click_timestamp"] = info.GetValueOrDefault("click_timestamp")?.ToString() ?? "",
+        },
+    });
+});
+// Richer data (adset/creative) arrives via Singular's Internal-BI postback path — pair the
+// device with SingularSDK.SetCustomUserId(AgentHog.AnonId) so postbacks resolve the person.
+```
+
+How it behaves:
+
+- **Callable at any time.** Before the first flush it rides the first batch; after that it
+  marks context pending, so the next flush on the normal cadence carries it — no forced
+  flush, no extra network traffic.
+- **Delivered once per distinct payload, confirmed end-to-end.** The payload persists
+  across crashes and offline launches until a batch carrying it gets a 2xx. Repeating an
+  already-delivered payload is a no-op; a *different* payload (a re-engagement verdict) is
+  a new delivery that stamps whichever session is live then.
+- `Provider` is required — the call is a no-op without it. A provider-only payload is
+  valid and records that the provider answered "organic" (it never erases AgentHog's own
+  referrer-derived attribution).
+- `Reset()` clears the pending payload and the delivered marker along with the identity.
+- Orthogonal to the automatic install attribution above — both raw sources survive
+  server-side; precedence only decides the `utm_*` columns. Keep `SetLandingParams` for
+  deep-link params only.
 
 ## Event naming (the AgentHog contract)
 
