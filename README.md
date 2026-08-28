@@ -1,7 +1,7 @@
 # agenthog-unity
 
 [AgentHog](https://github.com/AnniesAI/agent-hog) analytics for Unity games. Full
-integration docs: [hog.brightmotion.io/docs/integrate](https://hog.brightmotion.io/docs/integrate).
+integration docs: [agenthog.io/docs/integrate](https://agenthog.io/docs/integrate).
 
 - **[`com.brightmotion.agenthog/`](com.brightmotion.agenthog/)** — the UPM package games
   install. Sessions, automatic scene pageviews, uGUI click autocapture, per-screen time,
