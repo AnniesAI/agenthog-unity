@@ -6,7 +6,7 @@ project over the standard ingest contract. Pure C#, zero dependencies, no native
 IL2CPP-safe.
 
 Cross-platform integration docs (web, React Native, Unity, event naming, troubleshooting):
-**[hog.brightmotion.io/docs/integrate](https://hog.brightmotion.io/docs/integrate)**.
+**[agenthog.io/docs/integrate](https://agenthog.io/docs/integrate)**.
 
 - **Unity**: 2021.3 LTS or newer (developed against Unity 6 LTS)
 - **Platforms**: iOS and Android are the primary targets; standalone and the editor work
@@ -98,7 +98,7 @@ AgentHog.OverrideFlag("difficulty_curve", "b"); // QA: persisted, never pollutes
 flag killed, player outside the rollout percentage) — **the fallback always lives in your
 code**, which is what makes the CLI's kill switch safe. `Flag()` is main-thread-only and
 returns `null` from worker threads. Full loop (experiments, results, rollout, retirement):
-https://hog.brightmotion.io/docs/experiments
+https://agenthog.io/docs/experiments
 
 ### Config reference
 

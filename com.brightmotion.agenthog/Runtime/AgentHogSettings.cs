@@ -13,7 +13,7 @@ namespace Brightmotion.AgentHog
     [CreateAssetMenu(fileName = "AgentHogSettings", menuName = "AgentHog/Settings")]
     public sealed class AgentHogSettings : ScriptableObject
     {
-        [Tooltip("AgentHog host, e.g. https://hog.brightmotion.io (no trailing slash)")]
+        [Tooltip("AgentHog host, e.g. https://agenthog.io (no trailing slash)")]
         public string host = "";
 
         [Tooltip("Project key, e.g. ah_xxxxxxxx. Empty → SDK stays inert.")]

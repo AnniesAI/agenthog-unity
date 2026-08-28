@@ -6,7 +6,7 @@ namespace Brightmotion.AgentHog
     [Serializable]
     public sealed class AgentHogConfig
     {
-        /// <summary>AgentHog host, e.g. "https://hog.brightmotion.io" (no trailing slash).</summary>
+        /// <summary>AgentHog host, e.g. "https://agenthog.io" (no trailing slash).</summary>
         public string Host;
 
         /// <summary>Project key, e.g. "ah_xxxxxxxx".</summary>
