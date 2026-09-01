@@ -1,6 +1,8 @@
-# agenthog-unity
+# AgentHog for Unity
 
-[AgentHog](https://github.com/AnniesAI/agent-hog) analytics for Unity games. Full
+Product analytics and A/B testing for Unity games: event instrumentation, sessions, uGUI
+click autocapture and feature flags, from [AgentHog](https://agenthog.io). Pure C#, zero
+dependencies, no native code — installs as a UPM package straight from this repo. Full
 integration docs: [agenthog.io/docs/integrate](https://agenthog.io/docs/integrate).
 
 - **[`com.brightmotion.agenthog/`](com.brightmotion.agenthog/)** — the UPM package games
