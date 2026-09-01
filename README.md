@@ -15,7 +15,7 @@ integration docs: [agenthog.io/docs/integrate](https://agenthog.io/docs/integrat
   attribution; it alone carries the Gradle dependency, keeping the core native-free.
 - **[`ExampleGame/`](ExampleGame/)** — a tiny three-scene game (menu → tap-the-target →
   results) exercising the whole SDK surface, including the
-  [economy convention](https://hog.brightmotion.io/docs/economy) (an aggregated
+  [economy convention](https://agenthog.io/docs/economy) (an aggregated
   `level_reward` with `currency`/`amount`/`balance` on wins). Open it in Unity 6, press
   Play. It ships with
   a blank AgentHog config (SDK inert); to send real events, create
