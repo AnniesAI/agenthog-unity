@@ -67,7 +67,7 @@ public class GameController : MonoBehaviour
     }
 
     /// <summary>
-    /// In-game economy convention (https://hog.brightmotion.io/docs/economy): currency moves
+    /// In-game economy convention (https://agenthog.io/docs/economy): currency moves
     /// are plain custom events with "currency" (game-defined name), "amount" (always positive
     /// — direction comes from the server-side mapping, not the sign), and "balance" (holding
     /// after the transaction). One aggregated event per run, never one per coin. Turn it into

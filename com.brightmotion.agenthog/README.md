@@ -123,7 +123,7 @@ ah economy map --event item_bought  --sink
 Aggregate rapid pickups: a player vacuuming 300 coins across a level should produce **one**
 `level_reward` with `amount: 300`, not 300 events. Suggested event names, real-money (IAP)
 grants, multi-currency bundles, and reading the reports:
-**[hog.brightmotion.io/docs/economy](https://hog.brightmotion.io/docs/economy)**. The
+**[agenthog.io/docs/economy](https://agenthog.io/docs/economy)**. The
 [ExampleGame](../ExampleGame) grants a `level_reward` on every win as a working reference.
 
 ### Config reference
@@ -233,7 +233,7 @@ Scene/screen views go over the wire as `pageview: <path>`, so goals, funnels, an
 entry/exit/bounce treat game traffic exactly like web traffic. Custom event names are sent
 verbatim — pick stable snake_case names (`level_start`, `gems_purchased`) and keep variable
 data in props. For currency-moving events, prefer the suggested names in the
-[economy docs](https://hog.brightmotion.io/docs/economy) — `ah economy suggest`
+[economy docs](https://agenthog.io/docs/economy) — `ah economy suggest`
 auto-detects them.
 
 ## Privacy
